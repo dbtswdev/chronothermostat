@@ -11,15 +11,9 @@ import {
 } from "./shared/format";
 import { attachHold } from "./shared/hold";
 import { langOf, t, type Lang } from "./shared/i18n";
+import { ZONE_CARD_EDITOR_TAG, type ZoneCardConfig } from "./shared/zone-card-editor";
 
 export const EDITOR_CARD_TAG = "chronothermostat-editor-card";
-export const ZONE_CARD_EDITOR_TAG = "chronothermostat-zone-card-editor";
-
-export interface ZoneCardConfig {
-  type?: string;
-  entity: string;
-  name?: string;
-}
 
 interface Target {
   program: Program;
@@ -517,7 +511,7 @@ export class ChronothermostatEditorCard extends LitElement {
     }
     ha-card {
       display: block;
-      padding: 10px;
+      padding: 8px 10px;
       box-sizing: border-box;
       font-size: 15px;
       line-height: 20px;
@@ -557,7 +551,7 @@ export class ChronothermostatEditorCard extends LitElement {
     }
     .chip {
       flex: 1 1 0;
-      min-height: 44px;
+      min-height: 48px;
     }
     .days .chip {
       padding: 0;
@@ -574,16 +568,17 @@ export class ChronothermostatEditorCard extends LitElement {
       justify-content: space-between;
       gap: 8px;
       margin-top: 8px;
+      /* 28 px strut so the 15 px day name does not grow the 34 px line box */
+      font-size: 28px;
+      font-weight: 500;
       line-height: 34px;
       white-space: nowrap;
     }
     .day-name {
+      font-size: 15px;
+      font-weight: normal;
+      line-height: 20px;
       color: var(--secondary-text-color);
-    }
-    .time,
-    .temp {
-      font-size: 28px;
-      font-weight: 500;
     }
     .time {
       margin-left: 8px;
@@ -719,42 +714,4 @@ export class ChronothermostatEditorCard extends LitElement {
       gap: 4px;
     }
   `;
-}
-
-const CONFIG_SCHEMA = [
-  { name: "entity", selector: { entity: { domain: "climate" } } },
-  { name: "name", selector: { text: {} } },
-];
-
-/** Visual config editor shared by the zone cards: climate entity and optional name. */
-export class ChronothermostatZoneCardEditor extends LitElement {
-  static properties = {
-    hass: { attribute: false },
-    _config: { state: true },
-  };
-
-  declare hass?: Hass;
-  declare private _config?: ZoneCardConfig;
-
-  setConfig(config: ZoneCardConfig): void {
-    this._config = config;
-  }
-
-  protected render(): TemplateResult | typeof nothing {
-    if (!this.hass || !this._config) return nothing;
-    return html`<ha-form .hass=${this.hass} .data=${this._config} .schema=${CONFIG_SCHEMA}
-      .computeLabel=${this._label} @value-changed=${this._changed}></ha-form>`;
-  }
-
-  private _label = (item: { name: string }): string =>
-    t(langOf(this.hass), item.name === "entity" ? "config_entity" : "config_name");
-
-  private _changed(ev: CustomEvent<{ value: ZoneCardConfig }>): void {
-    ev.stopPropagation();
-    const config: ZoneCardConfig = { ...ev.detail.value };
-    if (!config.name) delete config.name;
-    this.dispatchEvent(
-      new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }),
-    );
-  }
 }
