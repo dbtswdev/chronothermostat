@@ -86,6 +86,7 @@ async def test_zone_sensor_state_and_attributes(hass, setup_at):
     assert attrs["next_step_at"] == datetime(2026, 11, 10, 23, 0, tzinfo=ROME).isoformat()
     assert attrs["next_step_target"] == 16.0
     assert len(attrs["today"]) == 96
+    assert attrs["return_at"] is None
     assert hass.states.get("sensor.chronothermostat_zone_b_status").state == "schedule"
 
 
@@ -136,3 +137,22 @@ async def test_away_without_return_shows_away_no_return(hass, setup_at):
     hass.states.async_set("climate.zone_a", "off", old.attributes)
     await hass.async_block_till_done()
     assert hass.states.get(SENSOR_A).state == "away_no_return"
+
+
+async def test_zone_sensor_exposes_return_at(hass, setup_at):
+    data = await setup_at(NOW)
+    value = NOW + timedelta(days=2)
+    await hass.services.async_call(
+        "datetime",
+        "set_value",
+        {"entity_id": DATETIME, "datetime": value.isoformat()},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": SELECT, "option": "away"}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    assert data.engine.return_at == value
+    exposed = hass.states.get(SENSOR_A).attributes["return_at"]
+    assert datetime.fromisoformat(exposed) == value

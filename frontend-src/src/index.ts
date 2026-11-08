@@ -1,5 +1,6 @@
 // Entry point of the cards bundle: registers the custom elements and the card picker entries.
 import { ChronothermostatEditorCard, EDITOR_CARD_TAG } from "./editor-card";
+import { ChronothermostatViewerCard, VIEWER_CARD_TAG } from "./viewer-card";
 
 interface CustomCardEntry {
   type: string;
@@ -26,3 +27,5 @@ function addCard(entry: CustomCardEntry): void {
 
 define(EDITOR_CARD_TAG, ChronothermostatEditorCard);
 addCard({ type: EDITOR_CARD_TAG, name: "Chronothermostat editor", preview: false });
+define(VIEWER_CARD_TAG, ChronothermostatViewerCard);
+addCard({ type: VIEWER_CARD_TAG, name: "Chronothermostat viewer", preview: false });

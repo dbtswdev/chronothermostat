@@ -7,6 +7,7 @@ export interface Hass {
   callWS<T>(msg: Record<string, unknown>): Promise<T>;
   callService(domain: string, service: string, data?: Record<string, unknown>): Promise<unknown>;
   states: Record<string, { state: string; attributes: Record<string, unknown> } | undefined>;
+  entities?: Record<string, { platform?: string } | undefined>;
   locale?: { language?: string };
   language?: string;
 }

@@ -77,4 +77,7 @@ class ZoneStatusSensor(ChronoEntity, SensorEntity):
             else None,
             "next_step_target": status.next_step_target,
             "today": status.today,
+            "return_at": self._engine.return_at.isoformat()
+            if self._engine.return_at
+            else None,
         }
