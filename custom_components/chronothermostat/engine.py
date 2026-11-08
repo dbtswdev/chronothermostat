@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
 from typing import Any, TypeIs
@@ -51,10 +51,18 @@ from .const import (
     HVAC_OFF,
     PROGRAM_SCENARIOS,
     SIGNAL_UPDATED,
+    TEMP_TOLERANCE,
     WEEKDAYS,
     Scenario,
 )
-from .program import Week, is_step, normalize_day, slot_index, weekday_key
+from .program import (
+    Week,
+    is_step,
+    normalize_day,
+    round_half,
+    slot_index,
+    weekday_key,
+)
 from .status import ZoneState, ZoneStatus, compute_zone_status
 from .storage import ProgramStore
 
@@ -405,17 +413,28 @@ class Engine:
     async def _async_zone_turned_on(self, zone_id: str) -> None:
         """Send the current value to a zone switched on by hand (§4.6).
 
-        In away or off the zone is left alone.
+        In away or off the zone is left alone. A zone that already holds the
+        value is not sent it again: that is also the case when the engine
+        itself turned the zone on, since its own set_temperature lands under
+        the lock before this runs.
         """
         async with self._lock:
             scenario = self.scenario
             target = rules.zone_turned_on_target(
                 scenario, self._week(zone_id, scenario), dt_util.now()
             )
-            if target is not None:
-                await self._send(
-                    zone_id, hvac_mode=None, temperature=target, reason="zone_on"
-                )
+            if target is None:
+                return
+            current = self.zone_state(zone_id).target
+            if (
+                current is not None
+                and abs(round_half(current) - target) <= TEMP_TOLERANCE
+            ):
+                _LOGGER.debug("%s: turned on, already at %s", zone_id, target)
+                return
+            await self._send(
+                zone_id, hvac_mode=None, temperature=target, reason="zone_on"
+            )
 
     async def _async_retry(self, zone_id: str) -> None:
         """Resend a zone's pending command if the zone is available (lock held).
@@ -448,24 +467,46 @@ class Engine:
     async def _async_save_day(
         self, zone_id: str, scenario: Scenario, weekday: str, values: list[float]
     ) -> None:
-        """Validate, persist and apply one program day (lock held)."""
+        """Validate, persist and apply one program day (lock held).
+
+        The update is dispatched as soon as the day is persisted. When the
+        save changes the current value of the active program, a pending
+        temperature of the zone takes the new value, and a zone that is on
+        is sent it now.
+        """
         scenario = self._program_scenario(zone_id, scenario)
         _check_weekday(weekday)
         day = normalize_day(values, *self.min_max(zone_id))
         old_week = self.store.get_week(zone_id, scenario)
         self.store.set_day(zone_id, scenario, weekday, day)
         await self.store.async_save()
+        self._dispatch()
+        new_week = self.store.get_week(zone_id, scenario)
+        local_now = dt_util.now()
+        if scenario is self.scenario:
+            self._refresh_pending_temperature(zone_id, old_week, new_week, local_now)
         target = rules.save_target(
             self.scenario,
             scenario,
             self.zone_state(zone_id),
             old_week,
-            self.store.get_week(zone_id, scenario),
-            dt_util.now(),
+            new_week,
+            local_now,
         )
         if target is not None:
             await self._send(zone_id, hvac_mode=None, temperature=target, reason="save")
-        self._dispatch()
+
+    def _refresh_pending_temperature(
+        self, zone_id: str, old_week: Week, new_week: Week, local_now: datetime
+    ) -> None:
+        """Give a pending temperature the new current value of a saved week."""
+        pending = self._pending.get(zone_id)
+        if pending is None or pending.temperature is None:
+            return
+        weekday, slot = weekday_key(local_now), slot_index(local_now)
+        new_value = new_week[weekday][slot]
+        if abs(new_value - old_week[weekday][slot]) > TEMP_TOLERANCE:
+            self._pending[zone_id] = replace(pending, temperature=new_value)
 
     def _program_scenario(self, zone_id: str, scenario: Scenario | str) -> Scenario:
         """Return the scenario of a zone program; raise ValueError if invalid."""

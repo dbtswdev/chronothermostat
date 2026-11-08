@@ -64,6 +64,23 @@ def call_value(call) -> tuple[str, object]:
     )
 
 
+def register_fake_climates(hass, sent: list) -> None:
+    """Make the climate services record the call and update the state."""
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        entity_id = call.data["entity_id"]
+        state = hass.states.get(entity_id)
+        attributes = dict(state.attributes)
+        if call.service == "set_hvac_mode":
+            hass.states.async_set(entity_id, call.data["hvac_mode"], attributes)
+        else:
+            attributes["temperature"] = call.data["temperature"]
+            hass.states.async_set(entity_id, state.state, attributes)
+
+    register_climate_services(hass, climate_service)
+
+
 def stored_day(
     hass_storage, entry_id: str, zone_id: str, program: str, weekday: str
 ) -> list[float]:
@@ -99,6 +116,51 @@ async def test_zone_turned_on_receives_current_value(
     assert temperatures(temp_calls) == [(ZONE_A, 20.5)]
     assert mode_calls == []
     assert "climate.zone_a: set temperature 20.5 (zone_on)" in caplog.text
+
+
+async def test_engine_heat_is_not_mistaken_for_zone_turned_on(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    data.store.set_day(ZONE_A, Scenario.WORK, "tue", [20.5] * 96)
+    sent = []
+    register_fake_climates(hass, sent)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await hass.async_block_till_done()
+    sent.clear()
+
+    # The engine's own heat turns the zones off -> heat; by the time the
+    # queued zone_on work runs, the zones already hold the program value.
+    await data.engine.async_set_scenario(Scenario.WORK)
+    await hass.async_block_till_done()
+
+    assert sent == [
+        (ZONE_A, "heat"),
+        (ZONE_A, 20.5),
+        (ZONE_B, "heat"),
+        (ZONE_B, 19.0),
+    ]
+
+
+async def test_zone_turned_on_with_program_target_sends_nothing(
+    hass, setup_at, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 8))
+    data.store.set_day(ZONE_A, Scenario.WORK, "tue", [20.5] * 96)
+    hass.states.async_set(ZONE_A, "off", {**ZONE_ATTRIBUTES, "temperature": 20.4})
+    await hass.async_block_till_done()
+    temp_calls.clear()
+
+    # 20.4 (a 0.1-step thermostat) rounds to 20.5: already on program.
+    hass.states.async_set(ZONE_A, "heat", {**ZONE_ATTRIBUTES, "temperature": 20.4})
+    await hass.async_block_till_done()
+    assert temp_calls == []
+
+    # Switched on by hand with another target: it gets the program value.
+    hass.states.async_set(ZONE_A, "off", {**ZONE_ATTRIBUTES, "temperature": 17.0})
+    hass.states.async_set(ZONE_A, "heat", {**ZONE_ATTRIBUTES, "temperature": 17.0})
+    await hass.async_block_till_done()
+    assert temperatures(temp_calls) == [(ZONE_A, 20.5)]
+    assert mode_calls == []
 
 
 @pytest.mark.parametrize("scenario", [Scenario.OFF, Scenario.AWAY])
@@ -273,6 +335,63 @@ async def test_copy_day_copies_saved_values(
     # Tuesday is today and its 08:00 value changed from 19.0 to 21.5.
     assert temperatures(temp_calls) == [(ZONE_A, 21.5)]
     assert len(updates) == 1
+
+
+async def test_save_dispatches_before_climate_call(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    order = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    async_dispatcher_connect(
+        hass,
+        SIGNAL_UPDATED.format(entry_id=data.engine.entry_id),
+        callback(lambda: order.append("dispatch")),
+    )
+
+    async def hung_climate_service(call):
+        order.append(call_value(call))
+        entered.set()
+        await release.wait()
+
+    register_climate_services(hass, hung_climate_service)
+
+    save = hass.async_create_task(
+        data.engine.async_save_day(ZONE_A, Scenario.WORK, "tue", [21.0] * 96)
+    )
+    await entered.wait()
+    # The climate call is still hanging and the update is already out.
+    assert order == ["dispatch", (ZONE_A, 21.0)]
+
+    release.set()
+    await save
+    assert order == ["dispatch", (ZONE_A, 21.0)]
+
+
+async def test_save_today_replaces_pending_temperature(
+    hass, setup_at, time_travel, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 6, 59, 59))
+    data.store.set_day(ZONE_A, Scenario.WORK, "tue", step_day(15.0, 19.0, SLOT_0700))
+    hass.states.async_set(ZONE_A, "unavailable")
+    await time_travel(at(10, 7))
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
+    temp_calls.clear()
+
+    # Other day, or the inactive program: the current value is unchanged.
+    await data.engine.async_save_day(ZONE_A, Scenario.WORK, "wed", [22.0] * 96)
+    await data.engine.async_save_day(ZONE_A, Scenario.HOLIDAY, "tue", [22.0] * 96)
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
+
+    await data.engine.async_save_day(ZONE_A, Scenario.WORK, "tue", [21.0] * 96)
+    assert temp_calls == []
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 21.0)}
+
+    hass.states.async_set(ZONE_A, "heat", {**ZONE_ATTRIBUTES, "temperature": 15.0})
+    await hass.async_block_till_done()
+    assert temperatures(temp_calls) == [(ZONE_A, 21.0)]
+    assert mode_calls == []
+    assert data.engine._pending == {}
 
 
 @pytest.mark.parametrize(
