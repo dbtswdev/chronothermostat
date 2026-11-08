@@ -6,10 +6,16 @@ from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_ZONES, DOMAIN, PLATFORMS
 from .engine import Engine
+from .services import async_register_services
 from .storage import ProgramStore
+from .websocket import async_register_websocket
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 @dataclass
@@ -19,6 +25,13 @@ class ChronoData:
     store: ProgramStore
     engine: Engine
     zone_ids: list[str]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the services and websocket commands once."""
+    async_register_services(hass)
+    async_register_websocket(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

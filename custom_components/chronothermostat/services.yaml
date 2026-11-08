@@ -1,0 +1,77 @@
+set_scenario:
+  fields:
+    scenario:
+      required: true
+      example: away
+      selector:
+        select:
+          translation_key: scenario
+          options:
+            - work
+            - holiday
+            - away
+            - "off"
+    return_at:
+      required: false
+      example: "2026-11-20 18:00:00+01:00"
+      selector:
+        datetime:
+
+set_program:
+  fields:
+    zone:
+      required: true
+      selector:
+        entity:
+          domain: climate
+    program:
+      required: true
+      example: work
+      selector:
+        select:
+          translation_key: program
+          options:
+            - work
+            - holiday
+    weekday:
+      required: true
+      example: mon
+      selector:
+        select:
+          translation_key: weekday
+          options: &weekdays [mon, tue, wed, thu, fri, sat, sun]
+    values:
+      required: true
+      selector:
+        object:
+
+copy_day:
+  fields:
+    zone:
+      required: true
+      selector:
+        entity:
+          domain: climate
+    program:
+      required: true
+      example: work
+      selector:
+        select:
+          translation_key: program
+          options:
+            - work
+            - holiday
+    from_weekday:
+      required: true
+      example: mon
+      selector:
+        select:
+          translation_key: weekday
+          options: *weekdays
+    to_weekday:
+      required: true
+      example: tue
+      selector:
+        select:
+          translation_key: weekday
+          options: *weekdays

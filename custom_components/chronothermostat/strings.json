@@ -62,5 +62,106 @@
         }
       }
     }
+  },
+  "services": {
+    "set_scenario": {
+      "name": "Set scenario",
+      "description": "Switches the house-wide scenario.",
+      "fields": {
+        "scenario": {
+          "name": "Scenario",
+          "description": "The scenario to activate."
+        },
+        "return_at": {
+          "name": "Return at",
+          "description": "When the house returns to the schedule. Required, timezone-aware and in the future for away; ignored otherwise."
+        }
+      }
+    },
+    "set_program": {
+      "name": "Set program day",
+      "description": "Replaces one day of a zone's weekly program.",
+      "fields": {
+        "zone": {
+          "name": "Zone",
+          "description": "The climate entity of the zone."
+        },
+        "program": {
+          "name": "Program",
+          "description": "The program to edit."
+        },
+        "weekday": {
+          "name": "Weekday",
+          "description": "The day to replace."
+        },
+        "values": {
+          "name": "Values",
+          "description": "96 setpoints in degrees, one per quarter hour starting at midnight."
+        }
+      }
+    },
+    "copy_day": {
+      "name": "Copy program day",
+      "description": "Copies one day of a zone's program onto another day.",
+      "fields": {
+        "zone": {
+          "name": "Zone",
+          "description": "The climate entity of the zone."
+        },
+        "program": {
+          "name": "Program",
+          "description": "The program to edit."
+        },
+        "from_weekday": {
+          "name": "From weekday",
+          "description": "The day to copy."
+        },
+        "to_weekday": {
+          "name": "To weekday",
+          "description": "The day to overwrite."
+        }
+      }
+    }
+  },
+  "selector": {
+    "scenario": {
+      "options": {
+        "work": "Work",
+        "holiday": "Holiday",
+        "away": "Away",
+        "off": "Off"
+      }
+    },
+    "program": {
+      "options": {
+        "work": "Work",
+        "holiday": "Holiday"
+      }
+    },
+    "weekday": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Chronothermostat is not loaded."
+    },
+    "unknown_zone": {
+      "message": "{zone} is not a configured zone."
+    },
+    "return_at_required": {
+      "message": "Away needs a timezone-aware return time in the future."
+    },
+    "invalid_program": {
+      "message": "Invalid program: {error}"
+    }
   }
 }

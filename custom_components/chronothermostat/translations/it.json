@@ -62,5 +62,106 @@
         }
       }
     }
+  },
+  "services": {
+    "set_scenario": {
+      "name": "Imposta scenario",
+      "description": "Cambia lo scenario valido per tutta la casa.",
+      "fields": {
+        "scenario": {
+          "name": "Scenario",
+          "description": "Lo scenario da attivare."
+        },
+        "return_at": {
+          "name": "Rientro",
+          "description": "Quando la casa torna al programma. Obbligatorio, con fuso orario e nel futuro per fuori casa; altrimenti ignorato."
+        }
+      }
+    },
+    "set_program": {
+      "name": "Imposta giorno del programma",
+      "description": "Sostituisce un giorno del programma settimanale di una zona.",
+      "fields": {
+        "zone": {
+          "name": "Zona",
+          "description": "L'entità clima della zona."
+        },
+        "program": {
+          "name": "Programma",
+          "description": "Il programma da modificare."
+        },
+        "weekday": {
+          "name": "Giorno",
+          "description": "Il giorno da sostituire."
+        },
+        "values": {
+          "name": "Valori",
+          "description": "96 temperature in gradi, una per quarto d'ora a partire da mezzanotte."
+        }
+      }
+    },
+    "copy_day": {
+      "name": "Copia giorno del programma",
+      "description": "Copia un giorno del programma di una zona su un altro giorno.",
+      "fields": {
+        "zone": {
+          "name": "Zona",
+          "description": "L'entità clima della zona."
+        },
+        "program": {
+          "name": "Programma",
+          "description": "Il programma da modificare."
+        },
+        "from_weekday": {
+          "name": "Dal giorno",
+          "description": "Il giorno da copiare."
+        },
+        "to_weekday": {
+          "name": "Al giorno",
+          "description": "Il giorno da sovrascrivere."
+        }
+      }
+    }
+  },
+  "selector": {
+    "scenario": {
+      "options": {
+        "work": "Lavoro",
+        "holiday": "Festivo",
+        "away": "Fuori casa",
+        "off": "Spento"
+      }
+    },
+    "program": {
+      "options": {
+        "work": "Lavoro",
+        "holiday": "Festivo"
+      }
+    },
+    "weekday": {
+      "options": {
+        "mon": "Lunedì",
+        "tue": "Martedì",
+        "wed": "Mercoledì",
+        "thu": "Giovedì",
+        "fri": "Venerdì",
+        "sat": "Sabato",
+        "sun": "Domenica"
+      }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Chronothermostat non è caricato."
+    },
+    "unknown_zone": {
+      "message": "{zone} non è una zona configurata."
+    },
+    "return_at_required": {
+      "message": "Fuori casa richiede un orario di rientro futuro con fuso orario."
+    },
+    "invalid_program": {
+      "message": "Programma non valido: {error}"
+    }
   }
 }
