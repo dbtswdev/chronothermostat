@@ -59,6 +59,10 @@ class ZoneStatusSensor(ChronoEntity, SensorEntity):
     _attr_translation_key = "zone_status"
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [key.value for key in ZoneStatusKey]
+    # Derived from the program; today's 96 values would bloat the database.
+    _unrecorded_attributes = frozenset(
+        {"today", "next_step_at", "next_step_target", "program_target", "return_at"}
+    )
 
     def __init__(self, engine: Engine, zone_id: str) -> None:
         """Set ids and the zone name placeholder."""

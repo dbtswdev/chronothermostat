@@ -52,6 +52,7 @@ async def test_entities_share_one_device(hass, setup_at):
     device = dr.async_get(hass).async_get(device_ids.pop())
     assert device.name == "Chronothermostat"
     assert device.manufacturer == "dbtswdev"
+    assert device.entry_type is dr.DeviceEntryType.SERVICE
 
 
 async def test_datetime_entity_roundtrip(hass, setup_at):
@@ -156,6 +157,21 @@ async def test_zone_sensor_exposes_return_at(hass, setup_at):
     assert data.engine.return_at == value
     exposed = hass.states.get(SENSOR_A).attributes["return_at"]
     assert datetime.fromisoformat(exposed) == value
+
+
+async def test_zone_sensor_keeps_bulky_attributes_out_of_the_recorder(hass, setup_at):
+    await setup_at(NOW)
+
+    unrecorded = hass.states.get(SENSOR_A).state_info["unrecorded_attributes"]
+
+    assert {
+        "today",
+        "next_step_at",
+        "next_step_target",
+        "program_target",
+        "return_at",
+    } <= unrecorded
+    assert not {"zone", "program"} & unrecorded
 
 
 async def test_zone_sensor_name_follows_the_zone_once_it_appears(hass, setup_at):

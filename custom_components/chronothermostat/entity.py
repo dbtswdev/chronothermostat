@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.core import callback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
@@ -17,6 +17,7 @@ def device_info(entry_id: str) -> DeviceInfo:
         identifiers={(DOMAIN, entry_id)},
         name="Chronothermostat",
         manufacturer="dbtswdev",
+        entry_type=DeviceEntryType.SERVICE,
     )
 
 
