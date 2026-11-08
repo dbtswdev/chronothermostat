@@ -53,7 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = ChronoData(
         store, engine, zone_ids
     )
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        _pop_data(hass, entry)
+        await engine.async_stop()
+        raise
     return True
 
 
@@ -61,8 +66,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
+    await _pop_data(hass, entry).engine.async_stop()
+    return True
+
+
+def _pop_data(hass: HomeAssistant, entry: ConfigEntry) -> ChronoData:
+    """Take the entry's runtime data out of hass.data."""
     data: ChronoData = hass.data[DOMAIN].pop(entry.entry_id)
-    await data.engine.async_stop()
     if not hass.data[DOMAIN]:
         hass.data.pop(DOMAIN)
-    return True
+    return data

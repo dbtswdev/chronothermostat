@@ -70,6 +70,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Seconds a climate service call may take before it counts as undelivered.
 CALL_TIMEOUT = 10
+# Seconds async_stop waits for engine work in flight (longer than CALL_TIMEOUT).
+STOP_TIMEOUT = 15
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,9 @@ class Engine:
         self._unsub_zones: CALLBACK_TYPE | None = None
         # Last hvac mode of each zone seen while it was available.
         self._last_mode: dict[str, str] = {}
+        # Set by async_stop: from then on the engine sends and saves nothing.
+        self._stopped = False
+        self._tasks: set[asyncio.Task[None]] = set()
 
     @property
     def scenario(self) -> Scenario:
@@ -180,15 +185,33 @@ class Engine:
         )
         if _is_future(self.return_at):
             self._arm_return_timer()
-        self._unsub_started = async_at_started(self.hass, self._async_startup)
+        self._unsub_started = async_at_started(self.hass, self._on_started)
 
     async def async_stop(self) -> None:
-        """Cancel every timer and listener; safe to call more than once."""
+        """Stop for good; safe to call more than once.
+
+        Cancels the timers, the listeners and the engine's own queued or
+        running work. A public call still holding the lock sends nothing more
+        and is waited for (at most STOP_TIMEOUT seconds), so once this returns
+        the engine no longer touches the zones or the store.
+        """
+        self._stopped = True
         for unsub in (self._unsub_quarter, self._unsub_zones, self._unsub_started):
             if unsub is not None:
                 unsub()
         self._unsub_quarter = self._unsub_zones = self._unsub_started = None
         self._cancel_return_timer()
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        try:
+            async with asyncio.timeout(STOP_TIMEOUT):
+                if tasks:
+                    await asyncio.wait(tasks)
+                async with self._lock:
+                    pass
+        except TimeoutError:
+            _LOGGER.warning("Engine work still running %s s after stop", STOP_TIMEOUT)
 
     async def async_set_scenario(
         self,
@@ -202,7 +225,7 @@ class Engine:
         Away keeps return_at only when it is timezone-aware and in the future.
         Otherwise a service call raises ValueError, and any other source (the
         select entity, startup) gets away without return. Other scenarios
-        clear return_at.
+        clear return_at. Raises HomeAssistantError once the engine is stopped.
         """
         scenario = Scenario(scenario)
         if scenario is not Scenario.AWAY:
@@ -216,10 +239,14 @@ class Engine:
         await self._async_change_scenario(scenario, return_at, f"scenario {scenario}")
 
     async def async_set_return_at(self, return_at: datetime | None) -> None:
-        """Store a new return time (naive or past means none) and re-arm."""
+        """Store a new return time (naive or past means none) and re-arm.
+
+        Raises HomeAssistantError once the engine is stopped.
+        """
         if not _is_future(return_at):
             return_at = None
         async with self._lock:
+            self._raise_if_stopped()
             self.store.set_scenario(self.scenario, return_at)
             await self.store.async_save()
             self._arm_return_timer()
@@ -233,16 +260,21 @@ class Engine:
         Raises ValueError for a zone that is not configured, a scenario
         without a program, an invalid weekday or invalid values (including a
         value outside the zone's min/max); storage is left untouched and
-        nothing is sent.
+        nothing is sent. Raises HomeAssistantError once the engine is stopped.
         """
         async with self._lock:
+            self._raise_if_stopped()
             await self._async_save_day(zone_id, scenario, weekday, values)
 
     async def async_copy_day(
         self, zone_id: str, scenario: Scenario, from_weekday: str, to_weekday: str
     ) -> None:
-        """Copy the saved values of one program day onto another day."""
+        """Copy the saved values of one program day onto another day.
+
+        Raises HomeAssistantError once the engine is stopped.
+        """
         async with self._lock:
+            self._raise_if_stopped()
             scenario = self._program_scenario(zone_id, scenario)
             _check_weekday(from_weekday)
             values = self.store.get_week(zone_id, scenario)[from_weekday]
@@ -285,7 +317,7 @@ class Engine:
             _as_float(attributes.get(ATTR_MAX_TEMP), DEFAULT_MAX_TEMP),
         )
 
-    async def _async_startup(self, _hass: HomeAssistant) -> None:
+    async def _async_startup(self) -> None:
         """Bring the zones in line once Home Assistant has started (§4.11).
 
         Configured zones missing from the states are logged; they are
@@ -294,13 +326,14 @@ class Engine:
         zones that are on get the current value and zones not available yet
         keep it as pending.
         """
-        self._unsub_started = None
         for zone_id in self.zone_ids:
             if self.hass.states.get(zone_id) is None:
                 _LOGGER.warning(
                     "Zone %s not found; it will be skipped until it appears", zone_id
                 )
         async with self._lock:
+            if self._stopped:
+                return
             if self._return_due():
                 await self._async_apply_scenario(Scenario.WORK, None, "return")
                 return
@@ -317,6 +350,12 @@ class Engine:
                     await self._send(
                         zone_id, hvac_mode=None, temperature=target, reason="startup"
                     )
+
+    @callback
+    def _on_started(self, _hass: HomeAssistant) -> None:
+        """Start the startup work once Home Assistant has started."""
+        self._unsub_started = None
+        self._create_task(self._async_startup())
 
     @callback
     def _on_quarter(self, now: datetime) -> None:
@@ -357,8 +396,21 @@ class Engine:
 
     @callback
     def _create_task(self, coro: Coroutine[Any, Any, None]) -> None:
-        """Run engine work as a tracked task."""
-        self.hass.async_create_task(coro, f"{DOMAIN} {self.entry_id}")
+        """Run engine work as a task that async_stop cancels."""
+        if self._stopped:
+            coro.close()
+            return
+        task = self.hass.async_create_task(coro, f"{DOMAIN} {self.entry_id}")
+        if not task.done():
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    def _raise_if_stopped(self) -> None:
+        """Refuse a public call once the engine is stopped (lock held)."""
+        if self._stopped:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="not_loaded"
+            )
 
     async def _async_change_scenario(
         self, scenario: Scenario, return_at: datetime | None, reason: str
@@ -369,6 +421,7 @@ class Engine:
         last scenario's state.
         """
         async with self._lock:
+            self._raise_if_stopped()
             await self._async_apply_scenario(scenario, return_at, reason)
 
     async def _async_apply_scenario(
@@ -399,6 +452,8 @@ class Engine:
         wins over a stale return.
         """
         async with self._lock:
+            if self._stopped:
+                return
             if self._return_due():
                 await self._async_apply_scenario(Scenario.WORK, None, "return")
 
@@ -418,6 +473,8 @@ class Engine:
         pending for when the zone returns.
         """
         async with self._lock:
+            if self._stopped:
+                return
             scenario = self.scenario
             stepped: set[str] = set()
             for zone_id in self.zone_ids:
@@ -446,6 +503,8 @@ class Engine:
         temperature; the retry then resends whatever is still pending.
         """
         async with self._lock:
+            if self._stopped:
+                return
             if turned_on:
                 await self._async_send_turned_on_value(zone_id)
             if became_available:
@@ -563,6 +622,8 @@ class Engine:
     def _arm_return_timer(self) -> None:
         """Arm the return timer when away with a return time, else cancel it."""
         self._cancel_return_timer()
+        if self._stopped:
+            return
         return_at = self.return_at
         if self.scenario is Scenario.AWAY and return_at is not None:
             self._unsub_return = async_track_point_in_time(
@@ -626,7 +687,17 @@ class Engine:
         unavailable entities without raising, so a call made during the Wall
         Display's blip would be lost silently. Any error of one zone's call
         leaves the part undelivered, so the other zones are still served.
+        Once the engine is stopped nothing is sent.
         """
+        if self._stopped:
+            _LOGGER.debug(
+                "%s: engine stopped, set %s %s not sent (%s)",
+                zone_id,
+                attribute,
+                value,
+                reason,
+            )
+            return False
         if self.zone_state(zone_id).hvac_mode is None:
             _LOGGER.debug(
                 "%s: unavailable, set %s %s kept pending (%s)",

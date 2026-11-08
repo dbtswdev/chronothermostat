@@ -1,6 +1,7 @@
 """Tests for zone events, pending retries and program saving."""
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime
 import logging
 import math
@@ -780,3 +781,76 @@ async def test_unexpected_error_at_startup_keeps_serving_other_zones(hass, setup
     assert sent == [(ZONE_B, 19.0)]
     assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
 
+
+async def test_unload_stops_timers_and_queued_work(
+    hass, hass_storage, config_entry, setup_at, time_travel
+):
+    data = await setup_at(at(10, 8))
+    engine = data.engine
+    key = f"chronothermostat.{config_entry.entry_id}"
+    # Away until 09:00 while both zones are unavailable: their "off" stays pending.
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "unavailable")
+    await engine.async_set_scenario(Scenario.AWAY, at(10, 9))
+    assert engine._pending == {
+        ZONE_A: PendingCommand("off", None),
+        ZONE_B: PendingCommand("off", None),
+    }
+    sent = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hung_climate_service(call):
+        sent.append(call_value(call))
+        entered.set()
+        await release.wait()
+
+    register_climate_services(hass, hung_climate_service)
+
+    # Zone A comes back: its retry holds the lock, hung on the climate call.
+    # Zone B's retry and a scenario change queue behind it.
+    hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+    await entered.wait()
+    hass.states.async_set(ZONE_B, "heat", ZONE_ATTRIBUTES)
+    queued_change = hass.async_create_task(engine.async_set_scenario(Scenario.WORK))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    stored_before = deepcopy(hass_storage[key])
+
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    release.set()
+    with pytest.raises(HomeAssistantError):
+        await queued_change
+    await time_travel(at(10, 8, 15))
+    await time_travel(at(10, 9))
+    await time_travel(at(10, 9, 15))
+
+    assert config_entry.state is ConfigEntryState.NOT_LOADED
+    assert sent == [(ZONE_A, "off")]
+    assert hass_storage[key] == stored_before
+
+
+async def test_public_calls_after_unload_raise_and_change_nothing(
+    hass, hass_storage, config_entry, setup_at, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 8))
+    engine = data.engine
+    key = f"chronothermostat.{config_entry.entry_id}"
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    stored_before = deepcopy(hass_storage[key])
+    temp_calls.clear()
+    mode_calls.clear()
+
+    for public_call in (
+        lambda: engine.async_set_scenario(Scenario.OFF),
+        lambda: engine.async_set_return_at(at(10, 9)),
+        lambda: engine.async_save_day(ZONE_A, Scenario.WORK, "tue", [21.0] * 96),
+        lambda: engine.async_copy_day(ZONE_A, Scenario.WORK, "mon", "tue"),
+    ):
+        with pytest.raises(HomeAssistantError):
+            await public_call()
+
+    assert temp_calls == []
+    assert mode_calls == []
+    assert hass_storage[key] == stored_before
