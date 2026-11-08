@@ -217,7 +217,7 @@ export class ChronothermostatViewerCard extends LitElement {
       const sameDay = nextAt && !isNaN(nextAt.getTime()) && dayStart(nextAt) <= dayStart(now);
       const end = sameDay ? Math.min(SLOTS, Math.max(cur, slotOf(nextAt as Date))) : SLOTS;
       const y = barGeometry([target], opts).bars[0].y;
-      band = svg`<rect class="band" x=${round2(cur * slotW)} y=${round2(y)}
+      band = svg`<rect class="band" shape-rendering="crispEdges" x=${round2(cur * slotW)} y=${round2(y)}
         width=${round2((end - cur) * slotW)} height=${round2(CHART_HEIGHT - y)}></rect>`;
     }
     const nowX = ((now.getHours() * 60 + now.getMinutes()) / 1440) * CHART_WIDTH;
@@ -226,7 +226,7 @@ export class ChronothermostatViewerCard extends LitElement {
       <svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
         ${[6, 12, 18].map((hour) => svg`<line class="grid" x1=${hour * 20} x2=${hour * 20}
           y1="0" y2=${CHART_HEIGHT}></line>`)}
-        ${geo.bars.map((bar, i) => svg`<rect class="bar ${i < cur ? "past" : ""}"
+        ${geo.bars.map((bar, i) => svg`<rect class="bar ${i < cur ? "past" : ""}" shape-rendering="crispEdges"
           x=${round2(bar.x)} y=${round2(bar.y)} width=${round2(bar.w)}
           height=${round2(bar.h)}></rect>`)}
         ${band}

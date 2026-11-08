@@ -76,6 +76,15 @@ describe("viewer card", () => {
     expect(width).toBeCloseTo(Number(bar.getAttribute("width")) * 10, 1);
   });
 
+  it("test_bars_and_band_render_with_crisp_edges", async () => {
+    // The 480-unit chart is stretched to the card width: without crisp edges the abutting bars
+    // show light anti-aliasing seams between them.
+    const { el } = await mount({ [SENSOR]: sensor("forced"), [ZONE]: climate(22) });
+    const rects = Array.from(root(el).querySelectorAll(".bar, .band"));
+    expect(rects.length).toBe(97);
+    for (const rect of rects) expect(rect.getAttribute("shape-rendering")).toBe("crispEdges");
+  });
+
   it("test_zone_off_sentence_in_error_colour", async () => {
     const { el } = await mount({ [SENSOR]: sensor("zone_off"), [ZONE]: { state: "off", attributes: {} } });
     expect(sentence(el).textContent?.trim()).toBe("Spento da te. Il programma riparte quando lo riaccendi.");
