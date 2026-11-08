@@ -11,6 +11,8 @@ type HassState = { state: string; attributes: Record<string, unknown> };
 
 const PLATFORM = "chronothermostat";
 const CLOCK_MS = 60000;
+/** How long the last available rendering is kept when the zone turns unavailable. */
+const GRACE_MS = 5000;
 const CHART_WIDTH = 480;
 const CHART_HEIGHT = 100;
 const MIN_TEMP = 5;
@@ -23,6 +25,8 @@ const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const slotOf = (d: Date): number => d.getHours() * 4 + Math.floor(d.getMinutes() / 15);
 const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isAvailable = (s: HassState | undefined): s is HassState =>
+  !!s && s.state !== "unavailable" && s.state !== "unknown";
 const dayStart = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
 /** Read-only summary of one zone: what it is doing now, and today's program. */
@@ -39,7 +43,12 @@ export class ChronothermostatViewerCard extends LitElement {
 
   private _sensorId?: string;
   private _seen?: { sensor?: HassState; climate?: HassState; lang: Lang };
-  private _timer?: ReturnType<typeof setInterval>;
+  private _timer?: ReturnType<typeof setTimeout>;
+  /** States of the last available rendering, kept through the Wall Display's short blip. */
+  private _held?: { sensor: HassState; climate?: HassState };
+  private _graceTimer?: ReturnType<typeof setTimeout>;
+  /** What the next render shows (set in willUpdate). */
+  private _display: { sensor?: HassState; climate?: HassState; lang: Lang } = { lang: "en" };
 
   constructor() {
     super();
@@ -70,15 +79,26 @@ export class ChronothermostatViewerCard extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this._now = new Date();
-    this._timer = setInterval(() => {
-      this._now = new Date();
-    }, CLOCK_MS);
+    this._scheduleClock();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
-    if (this._timer !== undefined) clearInterval(this._timer);
+    if (this._timer !== undefined) clearTimeout(this._timer);
     this._timer = undefined;
+    if (this._graceTimer !== undefined) clearTimeout(this._graceTimer);
+    this._graceTimer = undefined;
+    this._held = undefined;
+  }
+
+  /** Refresh the clock on every minute boundary. */
+  private _scheduleClock(): void {
+    const now = new Date();
+    const delay = CLOCK_MS - (now.getSeconds() * 1000 + now.getMilliseconds());
+    this._timer = setTimeout(() => {
+      this._now = new Date();
+      this._scheduleClock();
+    }, delay);
   }
 
   protected shouldUpdate(changed: PropertyValues): boolean {
@@ -92,6 +112,12 @@ export class ChronothermostatViewerCard extends LitElement {
     this._seen = current;
     if (changed.size === 1 && changed.has("hass")) return !same;
     return true;
+  }
+
+  protected willUpdate(changed: PropertyValues): void {
+    // A quarter-hour step or midnight can arrive before the minute timer fires.
+    if (changed.has("hass")) this._now = new Date();
+    this._display = this._shown();
   }
 
   /** The zone's status sensor: the `sensor.*` whose `zone` attribute is the configured climate. */
@@ -118,11 +144,34 @@ export class ChronothermostatViewerCard extends LitElement {
     };
   }
 
+  /**
+   * The states to render: the live ones or, for GRACE_MS after the zone turned unavailable, the
+   * last available ones, so the Wall Display's blip after each command does not shrink the card.
+   */
+  private _shown(): { sensor?: HassState; climate?: HassState; lang: Lang } {
+    const current = this._current();
+    if (isAvailable(current.sensor)) {
+      this._held = { sensor: current.sensor, climate: current.climate };
+      if (this._graceTimer !== undefined) clearTimeout(this._graceTimer);
+      this._graceTimer = undefined;
+      return current;
+    }
+    if (!this._held) return current;
+    if (this._graceTimer === undefined) {
+      this._graceTimer = setTimeout(() => {
+        this._graceTimer = undefined;
+        this._held = undefined;
+        this.requestUpdate();
+      }, GRACE_MS);
+    }
+    return { ...this._held, lang: current.lang };
+  }
+
   // ---- rendering -----------------------------------------------------------------------------
 
   protected render(): TemplateResult {
-    const { sensor, climate, lang } = this._current();
-    const key = !sensor || sensor.state === "unavailable" || sensor.state === "unknown" ? "unavailable" : sensor.state;
+    const { sensor, climate, lang } = this._display;
+    const key = isAvailable(sensor) ? sensor.state : "unavailable";
     const attrs = sensor?.attributes ?? {};
     const todayValues = Array.isArray(attrs.today) ? (attrs.today as unknown[]) : [];
     const showChart =

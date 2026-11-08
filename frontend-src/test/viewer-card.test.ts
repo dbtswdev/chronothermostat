@@ -177,6 +177,62 @@ describe("viewer card", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("ticks on the minute boundary", async () => {
+    vi.setSystemTime(new Date(2026, 10, 9, 6, 30, 20));
+    const { el } = await mount({ [SENSOR]: sensor("schedule"), [ZONE]: climate() });
+    const clockAfter = async (ms: number): Promise<string | undefined> => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await el.updateComplete;
+      return root(el).querySelector(".clock")?.textContent?.trim();
+    };
+    expect(await clockAfter(0)).toBe("06:30");
+    expect(await clockAfter(39_999)).toBe("06:30");
+    expect(await clockAfter(1)).toBe("06:31");
+    expect(await clockAfter(60_000)).toBe("06:32");
+  });
+
+  it("takes the current time on every update from Home Assistant", async () => {
+    const { el } = await mount({ [SENSOR]: sensor("schedule"), [ZONE]: climate() });
+    // The quarter-hour step arrives before the minute timer fires.
+    vi.setSystemTime(new Date(2026, 10, 9, 6, 45, 0, 300));
+    el.hass = makeHass({ [SENSOR]: sensor("schedule"), [ZONE]: climate() }) as never;
+    await el.updateComplete;
+    expect(root(el).querySelector(".clock")?.textContent?.trim()).toBe("06:45");
+    expect(root(el).querySelectorAll(".bar.past").length).toBe(27);
+  });
+
+  it("keeps the last rendering through a short unavailable blip", async () => {
+    const live = { [SENSOR]: sensor("schedule"), [ZONE]: climate() };
+    // Unavailable entities lose their extra attributes, the zone attribute included.
+    const blip = {
+      [SENSOR]: { state: "unavailable", attributes: {} },
+      [ZONE]: { state: "unavailable", attributes: {} },
+    };
+    const { el } = await mount(live);
+    const schedule = "Programma: 19,0 °C fino alle 09:00, poi 15,0 °C.";
+    const shownAfter = async (ms: number): Promise<string | undefined> => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await el.updateComplete;
+      return sentence(el).textContent?.trim();
+    };
+    expect(await shownAfter(0)).toBe(schedule);
+
+    el.hass = makeHass(blip) as never;
+    expect(await shownAfter(4_900)).toBe(schedule);
+    expect(root(el).querySelector(".chart")).not.toBeNull();
+
+    el.hass = makeHass({ [SENSOR]: sensor("schedule"), [ZONE]: climate() }) as never;
+    expect(await shownAfter(4_900)).toBe(schedule);
+
+    // Longer than the grace period: the zone really is unavailable.
+    el.hass = makeHass(blip) as never;
+    expect(await shownAfter(4_900)).toBe(schedule);
+    expect(await shownAfter(100)).toBe("Termostato non disponibile.");
+    expect(root(el).querySelector(".chart")).toBeNull();
+    el.remove();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("registers the element and the card picker entry", () => {
     expect(customElements.get("chronothermostat-viewer-card")).toBeDefined();
     expect(window.customCards?.some((c) => c.type === "chronothermostat-viewer-card")).toBe(true);
