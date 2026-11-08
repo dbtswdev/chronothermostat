@@ -3,7 +3,7 @@
 from enum import StrEnum
 
 DOMAIN = "chronothermostat"
-PLATFORMS = ["select", "datetime", "sensor"]
+PLATFORMS: list[str] = []
 
 CONF_ZONES = "zones"
 

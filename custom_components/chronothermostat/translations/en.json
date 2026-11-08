@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Chronothermostat",
+        "description": "Choose the climate entities to manage as zones.",
+        "data": {
+          "zones": "Zones"
+        }
+      }
+    },
+    "error": {
+      "no_zones": "Select at least one zone."
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Chronothermostat",
+        "description": "Choose the climate entities to manage as zones.",
+        "data": {
+          "zones": "Zones"
+        }
+      }
+    },
+    "error": {
+      "no_zones": "Select at least one zone."
+    }
+  }
+}
