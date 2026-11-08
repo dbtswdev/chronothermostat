@@ -782,6 +782,43 @@ async def test_unexpected_error_at_startup_keeps_serving_other_zones(hass, setup
     assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
 
 
+async def test_zone_switched_off_by_hand_drops_pending_heat(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    sent = []
+    failures = [HomeAssistantError("climate failure")] * 2
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call.service == "set_hvac_mode" and failures:
+            raise failures.pop()
+
+    register_climate_services(hass, climate_service)
+    # Work cannot switch either zone on: both keep heat pending.
+    await data.engine.async_set_scenario(Scenario.WORK)
+    assert data.engine._pending == {
+        ZONE_A: PendingCommand("heat", 19.0),
+        ZONE_B: PendingCommand("heat", 19.0),
+    }
+
+    # Zone A is switched on and then off again by hand; zone B stays off.
+    hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert data.engine._pending == {ZONE_B: PendingCommand("heat", 19.0)}
+    sent.clear()
+
+    # The retry still switches on zone B, which never got the scenario change.
+    await time_travel(at(10, 8))
+    assert sent == [(ZONE_B, "heat"), (ZONE_B, 19.0)]
+
+
 async def test_unload_stops_timers_and_queued_work(
     hass, hass_storage, config_entry, setup_at, time_travel
 ):

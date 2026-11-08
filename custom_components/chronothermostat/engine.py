@@ -49,6 +49,7 @@ from .const import (
     DEFAULT_MIN_TEMP,
     DOMAIN,
     HVAC_OFF,
+    HVAC_ON,
     PROGRAM_SCENARIOS,
     SIGNAL_UPDATED,
     TEMP_TOLERANCE,
@@ -377,7 +378,8 @@ class Engine:
         after each command is neither "switched on" nor "switched off", and
         a switch-on that reaches Home Assistant across a blip still counts.
         A zone becoming available (from missing, unavailable or unknown)
-        gets its pending command.
+        gets its pending command. A zone switched off by hand drops a pending
+        heat, so no retry switches it back on (§4.6).
         """
         new_state = event.data["new_state"]
         if not _is_available(new_state):
@@ -386,7 +388,13 @@ class Engine:
         last_mode = self._last_mode.get(zone_id)
         self._last_mode[zone_id] = new_state.state
         turned_on = last_mode == HVAC_OFF and new_state.state != HVAC_OFF
+        turned_off = last_mode not in (None, HVAC_OFF) and new_state.state == HVAC_OFF
         became_available = not _is_available(event.data["old_state"])
+        pending = self._pending.get(zone_id)
+        if turned_off and pending is not None and pending.hvac_mode == HVAC_ON:
+            # Dropped right away, before a queued tick or retry can resend it.
+            del self._pending[zone_id]
+            _LOGGER.debug("%s: switched off by hand, pending heat dropped", zone_id)
         if turned_on or became_available:
             self._create_task(
                 self._async_zone_event(
