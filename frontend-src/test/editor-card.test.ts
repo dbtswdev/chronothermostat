@@ -12,17 +12,39 @@ const flatWeek = (value: number): Week =>
 
 interface FakeOpts {
   scenario?: string;
-  failProgram?: boolean;
+  failPrograms?: string[];
   failSave?: boolean;
   zones?: string[];
+}
+
+interface Held {
+  program: string;
+  release: () => void;
 }
 
 /** A fake hass whose websocket/service calls behave like a tiny backend. */
 function fakeHass(opts: FakeOpts = {}) {
   const store: Record<string, Week> = { work: flatWeek(19), holiday: flatWeek(17) };
   store.work.tue = new Array(96).fill(21);
+  /** Test controls: failing calls, and get_program / set_program held until released by hand. */
+  const backend = {
+    store,
+    failInfo: false,
+    failPrograms: new Set(opts.failPrograms ?? []),
+    holdPrograms: false,
+    heldPrograms: [] as Held[],
+    holdSaves: false,
+    heldSaves: [] as (() => void)[],
+  };
+  const answerProgram = (program: string) => {
+    if (backend.failPrograms.has(program)) throw new Error("boom");
+    const week = store[program];
+    const copy = Object.fromEntries(WEEKDAY_KEYS.map((k) => [k, week[k].slice()]));
+    return { weekdays: copy, min_temp: 7, max_temp: 30, step: 0.5 };
+  };
   const callWS = vi.fn(async (msg: Record<string, unknown>) => {
     if (msg.type === "chronothermostat/info") {
+      if (backend.failInfo) throw new Error("boom");
       return {
         scenario_entity_id: SCENARIO,
         return_at_entity_id: null,
@@ -30,41 +52,53 @@ function fakeHass(opts: FakeOpts = {}) {
       };
     }
     if (msg.type === "chronothermostat/get_program") {
-      if (opts.failProgram) throw new Error("boom");
-      const week = store[msg.program as string];
-      const copy = Object.fromEntries(WEEKDAY_KEYS.map((k) => [k, week[k].slice()]));
-      return { weekdays: copy, min_temp: 7, max_temp: 30, step: 0.5 };
+      const program = msg.program as string;
+      if (!backend.holdPrograms) return answerProgram(program);
+      return new Promise((resolve, reject) => {
+        backend.heldPrograms.push({
+          program,
+          release: () => {
+            try {
+              resolve(answerProgram(program));
+            } catch (err) {
+              reject(err);
+            }
+          },
+        });
+      });
     }
     throw new Error(`unexpected ${String(msg.type)}`);
   });
   const callService = vi.fn(async (_domain: string, service: string, data: Record<string, unknown>) => {
+    if (backend.holdSaves) await new Promise<void>((resolve) => backend.heldSaves.push(resolve));
     if (opts.failSave) throw new Error("boom");
     if (service === "set_program") {
       store[data.program as string][data.weekday as WeekdayKey] = (data.values as number[]).slice();
     }
     return {};
   });
-  return {
+  const hass = {
     callWS,
     callService,
     states: { [SCENARIO]: { state: opts.scenario ?? "work", attributes: {} } },
     locale: { language: "en" },
   };
+  return { hass, backend };
 }
 
 const flush = async (el: ChronothermostatEditorCard): Promise<void> => {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  for (let i = 0; i < 30; i++) await Promise.resolve();
   await el.updateComplete;
 };
 
 async function mount(opts: FakeOpts = {}, config: Record<string, unknown> = { entity: ZONE }) {
-  const hass = fakeHass(opts);
+  const { hass, backend } = fakeHass(opts);
   const el = document.createElement("chronothermostat-editor-card") as ChronothermostatEditorCard;
   el.setConfig(config as never);
   el.hass = hass as never;
   document.body.appendChild(el);
   await flush(el);
-  return { el, hass };
+  return { el, hass, backend };
 }
 
 const root = (el: HTMLElement): ShadowRoot => el.shadowRoot as ShadowRoot;
@@ -289,10 +323,200 @@ describe("editor card", () => {
   });
 
   it("shows the load error instead of throwing", async () => {
-    const failed = await mount({ failProgram: true });
+    const failed = await mount({ failPrograms: ["work", "holiday"] });
     expect(text(failed.el, ".error")).toBe("Could not load the data.");
     const unknown = await mount({ zones: ["climate.other"] });
     expect(text(unknown.el, ".error")).toBe("Could not load the data.");
     expect(root(unknown.el).querySelector(".chart")).toBeNull();
+  });
+
+  describe("switching", () => {
+    const programOn = (el: HTMLElement): string => text(el, ".program.on");
+    const dayOn = (el: HTMLElement): string => text(el, ".day.on");
+
+    it("a late response never wipes edits and the last tap wins (program, then day)", async () => {
+      const { el, backend } = await mount();
+      backend.holdPrograms = true;
+      await tap(el, '.program[data-program="holiday"]');
+      expect(programOn(el)).toBe("Holiday");
+      await tap(el, '.day[data-day="wed"]');
+      expect(dayOn(el)).toBe("Wed");
+      expect((q(el, "#plus") as HTMLButtonElement).disabled).toBe(true);
+      expect((q(el, "#save") as HTMLButtonElement).disabled).toBe(true);
+      expect((q(el, "#copy") as HTMLButtonElement).disabled).toBe(true);
+      await press(el, "#plus"); // refused while loading: nothing to lose later
+      expect([text(el, ".temp"), text(el, ".status")]).toEqual(["19.0 °C", "No changes"]);
+      expect(backend.heldPrograms.map((h) => h.program)).toEqual(["holiday", "holiday"]);
+      backend.heldPrograms[0].release(); // stale
+      await flush(el);
+      expect([programOn(el), dayOn(el)]).toEqual(["Holiday", "Wed"]);
+      backend.heldPrograms[1].release();
+      await flush(el);
+      expect([programOn(el), dayOn(el), text(el, ".day-name")]).toEqual(["Holiday", "Wed", "Wednesday"]);
+      expect(text(el, ".temp")).toBe("17.0 °C");
+      expect(text(el, ".status")).toBe("No changes");
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+      await press(el, "#plus");
+      expect(text(el, ".temp")).toBe("17.5 °C");
+      expect(text(el, ".status")).toBe("Unsaved changes");
+    });
+
+    it("the last program tap wins whatever order the responses arrive in", async () => {
+      const { el, backend } = await mount();
+      backend.holdPrograms = true;
+      await tap(el, '.program[data-program="holiday"]');
+      await tap(el, '.program[data-program="work"]');
+      expect(programOn(el)).toBe("Work");
+      backend.heldPrograms[0].release(); // holiday, stale
+      await flush(el);
+      backend.heldPrograms[1].release();
+      await flush(el);
+      expect([programOn(el), text(el, ".temp")]).toEqual(["Work", "19.0 °C"]);
+
+      await tap(el, '.program[data-program="holiday"]');
+      await tap(el, '.program[data-program="work"]');
+      backend.heldPrograms[3].release(); // work, newest
+      await flush(el);
+      backend.heldPrograms[2].release(); // holiday, stale
+      await flush(el);
+      expect([programOn(el), text(el, ".temp")]).toEqual(["Work", "19.0 °C"]);
+    });
+
+    it("a program switch loads that program and keeps the cursor", async () => {
+      const { el, hass } = await mount();
+      await press(el, "#next");
+      hass.callWS.mockClear();
+      await tap(el, '.program[data-program="holiday"]');
+      expect(hass.callWS).toHaveBeenCalledWith({
+        type: "chronothermostat/get_program",
+        zone: ZONE,
+        program: "holiday",
+      });
+      expect([programOn(el), dayOn(el)]).toEqual(["Holiday", "Mon"]);
+      expect(text(el, ".time")).toBe("06:45");
+      expect(text(el, ".temp")).toBe("17.0 °C");
+      expect(text(el, ".status")).toBe("No changes");
+    });
+
+    it("a day switch reloads the program, so changes made elsewhere are not overwritten", async () => {
+      const { el, backend } = await mount();
+      backend.store.work.tue = new Array(96).fill(22);
+      await tap(el, '.day[data-day="tue"]');
+      expect(text(el, ".temp")).toBe("22.0 °C");
+    });
+
+    it("a failed program switch shows the load error and keeps the card usable", async () => {
+      const { el } = await mount({ failPrograms: ["holiday"] });
+      await tap(el, '.program[data-program="holiday"]');
+      expect(text(el, ".status")).toBe("Could not load the data.");
+      expect(q(el, ".status").classList.contains("error")).toBe(true);
+      expect([programOn(el), dayOn(el), text(el, ".temp")]).toEqual(["Work", "Mon", "19.0 °C"]);
+      await press(el, "#plus");
+      expect(text(el, ".temp")).toBe("19.5 °C");
+      expect(text(el, ".status")).toBe("Unsaved changes");
+    });
+
+    it("bar Save towards another program saves the day, then loads that program", async () => {
+      const { el, hass } = await mount();
+      await press(el, "#plus");
+      await tap(el, '.program[data-program="holiday"]');
+      expect(programOn(el)).toBe("Work");
+      await tap(el, "#bar-save");
+      expect(hass.callService).toHaveBeenCalledTimes(1);
+      const data = hass.callService.mock.calls[0][2];
+      expect([data.program, data.weekday, (data.values as number[])[26]]).toEqual(["work", "mon", 19.5]);
+      expect([programOn(el), dayOn(el), text(el, ".temp")]).toEqual(["Holiday", "Mon", "17.0 °C"]);
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+      expect(text(el, ".status")).toBe("Monday program saved");
+      await tap(el, '.program[data-program="work"]');
+      expect(text(el, ".temp")).toBe("19.5 °C");
+    });
+
+    it("bar Discard towards another program drops the edits, then loads that program", async () => {
+      const { el, hass } = await mount();
+      await press(el, "#plus");
+      await tap(el, '.program[data-program="holiday"]');
+      await tap(el, "#bar-discard");
+      expect([programOn(el), text(el, ".temp"), text(el, ".status")]).toEqual([
+        "Holiday", "17.0 °C", "No changes",
+      ]);
+      await tap(el, '.program[data-program="work"]');
+      expect(text(el, ".temp")).toBe("19.0 °C");
+      expect(hass.callService).not.toHaveBeenCalled();
+    });
+
+    it("the bar goes away, with its pending switch, when the edits are undone", async () => {
+      const { el } = await mount();
+      await press(el, "#plus");
+      await tap(el, '.day[data-day="tue"]');
+      expect(root(el).querySelector(".dirty-bar")).not.toBeNull();
+      await press(el, "#minus");
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+      expect([dayOn(el), text(el, ".status")]).toEqual(["Mon", "No changes"]);
+      await tap(el, "#save");
+      expect(dayOn(el)).toBe("Mon");
+      await tap(el, '.day[data-day="tue"]');
+      expect([dayOn(el), text(el, ".temp")]).toEqual(["Tue", "21.0 °C"]);
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+    });
+
+    it("main Save with a pending switch saves the day, then switches", async () => {
+      const { el, hass } = await mount();
+      await press(el, "#plus");
+      await tap(el, '.day[data-day="tue"]');
+      await tap(el, "#save");
+      expect(hass.callService.mock.calls[0][2].weekday).toBe("mon");
+      expect([dayOn(el), text(el, ".temp"), text(el, ".status")]).toEqual([
+        "Tue", "21.0 °C", "Monday program saved",
+      ]);
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+    });
+
+    it("bar Save keeps the bar when edits were made while the save was in flight", async () => {
+      const { el, hass, backend } = await mount();
+      await press(el, "#plus");
+      await tap(el, '.day[data-day="tue"]');
+      backend.holdSaves = true;
+      await tap(el, "#bar-save");
+      expect((q(el, "#bar-save") as HTMLButtonElement).disabled).toBe(true);
+      await press(el, "#plus"); // 20.0 while the 19.5 is being saved
+      backend.heldSaves[0]();
+      await flush(el);
+      expect(root(el).querySelector(".dirty-bar")).not.toBeNull();
+      expect([dayOn(el), text(el, ".temp"), text(el, ".status")]).toEqual([
+        "Mon", "20.0 °C", "Unsaved changes",
+      ]);
+      backend.holdSaves = false;
+      await tap(el, "#bar-save");
+      expect(hass.callService).toHaveBeenCalledTimes(2);
+      expect((hass.callService.mock.calls[1][2].values as number[])[26]).toBe(20);
+      expect(dayOn(el)).toBe("Tue");
+      expect(root(el).querySelector(".dirty-bar")).toBeNull();
+    });
+  });
+
+  it("retries a failed first load on a later hass update, at most every 30 s", async () => {
+    const { el, hass, backend } = await (async () => {
+      const made = fakeHass();
+      made.backend.failInfo = true;
+      const card = document.createElement("chronothermostat-editor-card") as ChronothermostatEditorCard;
+      card.setConfig({ entity: ZONE });
+      card.hass = made.hass as never;
+      document.body.appendChild(card);
+      await flush(card);
+      return { el: card, ...made };
+    })();
+    expect(text(el, ".error")).toBe("Could not load the data.");
+    backend.failInfo = false;
+    const calls = hass.callWS.mock.calls.length;
+    el.hass = { ...hass } as never;
+    await flush(el);
+    expect(hass.callWS.mock.calls.length).toBe(calls);
+    expect(text(el, ".error")).toBe("Could not load the data.");
+    vi.advanceTimersByTime(30_000);
+    el.hass = { ...hass } as never;
+    await flush(el);
+    expect(root(el).querySelector(".load-error")).toBeNull();
+    expect(text(el, ".temp")).toBe("19.0 °C");
   });
 });

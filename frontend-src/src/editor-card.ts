@@ -28,6 +28,7 @@ type HoldButton = (typeof HOLD_BUTTONS)[number];
 
 const TEMP_STEP = 0.5;
 const SAVED_MESSAGE_MS = 3000;
+const LOAD_RETRY_MS = 30000;
 const CHART_HEIGHT = 150;
 const CHART_PAD_TOP = 8;
 const CHART_PAD_LEFT = 26;
@@ -59,6 +60,7 @@ export class ChronothermostatEditorCard extends LitElement {
     _pending: { state: true },
     _copyOpen: { state: true },
     _saving: { state: true },
+    _loading: { state: true },
     _chartWidth: { state: true },
   };
 
@@ -73,12 +75,18 @@ export class ChronothermostatEditorCard extends LitElement {
   declare private _pending?: Target;
   declare private _copyOpen: boolean;
   declare private _saving: boolean;
+  /** A switch is loading: chips show the target, editing is disabled until the program arrives. */
+  declare private _loading: boolean;
   declare private _chartWidth: number;
 
-  /** Last program loaded from the backend: the saved week that "Copy from…" and day switches read. */
+  /** Program and day that `_state` holds (the chips may already show a switch target). */
+  private _shown?: Target;
+  /** Last program loaded from the backend: the saved week that "Copy from…" reads. */
   private _data?: ProgramData;
   private _info?: Info;
   private _loadedFor?: string;
+  private _lastLoadAttempt = 0;
+  /** Incremented by every switch: responses of older switches are dropped. */
   private _loadToken = 0;
   private _savedTimer?: ReturnType<typeof setTimeout>;
   private _holds = new Map<HoldButton, { el: HTMLElement; detach: () => void }>();
@@ -92,6 +100,7 @@ export class ChronothermostatEditorCard extends LitElement {
     this._loadFailed = false;
     this._copyOpen = false;
     this._saving = false;
+    this._loading = false;
     this._chartWidth = DEFAULT_CHART_WIDTH;
   }
 
@@ -132,16 +141,17 @@ export class ChronothermostatEditorCard extends LitElement {
   }
 
   protected shouldUpdate(changed: PropertyValues): boolean {
-    // hass changes on every state change in the house; only the language matters here.
+    // hass changes on every state change in the house; only the language and a pending
+    // (re)load matter here.
     if (changed.size === 1 && changed.has("hass")) {
       const old = changed.get("hass") as Hass | undefined;
-      return !old || langOf(old) !== langOf(this.hass);
+      return !old || langOf(old) !== langOf(this.hass) || this._needsLoad();
     }
     return true;
   }
 
   protected willUpdate(): void {
-    if (this.hass && this._config && this._loadedFor !== this._config.entity) void this._load();
+    if (this._needsLoad()) void this._load();
   }
 
   protected updated(): void {
@@ -173,32 +183,34 @@ export class ChronothermostatEditorCard extends LitElement {
           ${weekdayName(d, lang, true)}
         </button>`)}
       </div>
-      ${this._pending ? this._renderDirtyBar(lang) : nothing}
-      <div class="reading">
+      ${this._pending && isDirty(state) ? this._renderDirtyBar(lang) : nothing}
+      <div class="reading ${this._loading ? "loading" : ""}">
         <span><span class="day-name">${capitalize(weekdayName(this._day, lang))}</span><span
           class="time">${slotLabel(state.cursor)}</span></span>
         <span class="temp">${formatTemp(state.values[state.cursor], lang)}</span>
       </div>
       ${this._renderChart(state)}
       <div class="controls">
-        <button class="big hold" id="prev" aria-label=${t(lang, "prev_slot")}>
+        <button class="big hold" id="prev" ?disabled=${this._loading} aria-label=${t(lang, "prev_slot")}>
           <span class="glyph" aria-hidden="true">‹</span>
         </button>
-        <button class="big hold" id="next" aria-label=${t(lang, "next_slot")}>
+        <button class="big hold" id="next" ?disabled=${this._loading} aria-label=${t(lang, "next_slot")}>
           <span class="glyph" aria-hidden="true">›</span>
         </button>
-        <button class="big hold wide" id="cont">
+        <button class="big hold wide" id="cont" ?disabled=${this._loading}>
           ${CONTINUE_ICON}<span>${t(lang, "continue")}</span>
         </button>
-        <button class="big hold" id="minus" aria-label=${t(lang, "temp_down")}>
+        <button class="big hold" id="minus" ?disabled=${this._loading} aria-label=${t(lang, "temp_down")}>
           <span class="glyph" aria-hidden="true">−</span>
         </button>
-        <button class="big hold" id="plus" aria-label=${t(lang, "temp_up")}>
+        <button class="big hold" id="plus" ?disabled=${this._loading} aria-label=${t(lang, "temp_up")}>
           <span class="glyph" aria-hidden="true">+</span>
         </button>
-        <button class="big" id="copy" aria-expanded=${this._copyOpen ? "true" : "false"}
+        <button class="big" id="copy" ?disabled=${this._loading}
+          aria-expanded=${this._copyOpen ? "true" : "false"}
           @click=${this._toggleCopy}>${t(lang, "copy_from")}</button>
-        <button class="big save" id="save" ?disabled=${this._saving} @click=${this._onSave}>
+        <button class="big save" id="save" ?disabled=${this._saving || this._loading}
+          @click=${this._saveAndContinue}>
           ${t(lang, "save")}
         </button>
       </div>
@@ -214,7 +226,8 @@ export class ChronothermostatEditorCard extends LitElement {
     return html`<div class="dirty-bar">
       <span class="message">${t(lang, "unsaved")}</span>
       <button class="big" id="bar-discard" @click=${this._discardPending}>${t(lang, "discard")}</button>
-      <button class="big save" id="bar-save" ?disabled=${this._saving} @click=${this._savePending}>
+      <button class="big save" id="bar-save" ?disabled=${this._saving}
+        @click=${this._saveAndContinue}>
         ${t(lang, "save")}
       </button>
     </div>`;
@@ -231,7 +244,7 @@ export class ChronothermostatEditorCard extends LitElement {
     const cursor = geo.bars[state.cursor];
     const cursorX = round2(cursor.x + cursor.w / 2);
     const last = geo.xTicks.length - 1;
-    return html`<div class="chart">
+    return html`<div class="chart ${this._loading ? "loading" : ""}">
       <svg viewBox="0 0 ${width} ${CHART_HEIGHT}" @pointerdown=${this._onChartDown}>
         <g transform="translate(0 ${CHART_PAD_TOP})">
           ${geo.yTicks.map((tick) => svg`
@@ -281,13 +294,28 @@ export class ChronothermostatEditorCard extends LitElement {
     return zone ? zone.name : "";
   }
 
-  // ---- loading -------------------------------------------------------------------------------
+  // ---- loading and switching ----------------------------------------------------------------
+  //
+  // Every switch (first load, day, program) reloads get_program for its target under a new
+  // token, so a display left open for weeks never edits stale data. The chips show the target
+  // at once; editing is disabled until it arrives; a newer switch supersedes an older one and
+  // responses with a stale token are dropped. A switch never starts while the day is dirty
+  // (that goes through the "Unsaved changes" bar), so no edit can be overwritten by a load.
+
+  private _needsLoad(): boolean {
+    if (!this.hass || !this._config) return false;
+    if (this._loadedFor !== this._config.entity) return true;
+    // A failed first load is retried on a later hass update, at most every LOAD_RETRY_MS.
+    return this._loadFailed && Date.now() - this._lastLoadAttempt >= LOAD_RETRY_MS;
+  }
 
   private _reset(): void {
     this._loadToken++;
     this._loadedFor = undefined;
+    this._shown = undefined;
     this._data = undefined;
     this._state = undefined;
+    this._loading = false;
     this._loadFailed = false;
     this._failure = undefined;
     this._pending = undefined;
@@ -301,6 +329,7 @@ export class ChronothermostatEditorCard extends LitElement {
     if (!hass || !config) return;
     const entity = config.entity;
     this._loadedFor = entity;
+    this._lastLoadAttempt = Date.now();
     let program: Program;
     try {
       if (!this._info) this._info = await getInfo(hass);
@@ -313,48 +342,17 @@ export class ChronothermostatEditorCard extends LitElement {
       const scenarioState = scenarioId ? hass.states[scenarioId] : undefined;
       program = scenarioState && scenarioState.state === "holiday" ? "holiday" : "work";
     } catch {
-      if (this._loadedFor === entity) this._loadFailed = true;
+      if (this._loadedFor === entity) this._firstLoadFailed();
       return;
     }
     const now = new Date();
-    await this._loadProgram({ program, day: weekdayKeyOf(now) }, currentSlot(now));
+    await this._switchTo({ program, day: weekdayKeyOf(now) }, currentSlot(now));
   }
 
-  private async _loadProgram(target: Target, cursor: number): Promise<boolean> {
-    const hass = this.hass;
-    const config = this._config;
-    if (!hass || !config) return false;
-    const token = ++this._loadToken;
-    try {
-      const data = await getProgram(hass, config.entity, target.program);
-      if (token !== this._loadToken) return false;
-      if (!validWeek(data)) throw new Error("Invalid program data");
-      this._program = target.program;
-      this._showDay(data, target.day, cursor);
-      return true;
-    } catch {
-      if (token !== this._loadToken) return false;
-      if (this._state) this._failure = "error_load";
-      else this._loadFailed = true;
-      return false;
-    }
+  private _firstLoadFailed(): void {
+    this._info = undefined; // refetched on retry: the zones may have changed
+    this._loadFailed = true;
   }
-
-  private _showDay(data: ProgramData, day: WeekdayKey, cursor: number): void {
-    const values = data.weekdays[day];
-    this._data = data;
-    this._day = day;
-    this._failure = undefined;
-    this._state = {
-      values: values.slice(),
-      saved: values.slice(),
-      cursor,
-      min: data.min_temp,
-      max: data.max_temp,
-    };
-  }
-
-  // ---- program and day switching -------------------------------------------------------------
 
   private _select(target: Target): void {
     if (target.program === this._program && target.day === this._day) {
@@ -368,19 +366,50 @@ export class ChronothermostatEditorCard extends LitElement {
     void this._switchTo(target);
   }
 
-  private async _switchTo(target: Target): Promise<void> {
+  private async _switchTo(target: Target, cursor?: number): Promise<void> {
+    const hass = this.hass;
+    const config = this._config;
+    if (!hass || !config) return;
+    const token = ++this._loadToken;
     this._pending = undefined;
     this._copyOpen = false;
-    const cursor = this._state ? this._state.cursor : 0;
-    if (target.program === this._program && this._data) {
-      this._showDay(this._data, target.day, cursor);
-      return;
+    this._program = target.program;
+    this._day = target.day;
+    this._loading = true;
+    try {
+      const data = await getProgram(hass, config.entity, target.program);
+      if (token !== this._loadToken) return;
+      if (!validWeek(data)) throw new Error("Invalid program data");
+      const keep = cursor !== undefined ? cursor : this._state ? this._state.cursor : 0;
+      this._showDay(data, target, keep);
+    } catch {
+      if (token !== this._loadToken) return;
+      if (this._state && this._shown) {
+        // Keep the card usable on what it showed before.
+        this._program = this._shown.program;
+        this._day = this._shown.day;
+        this._failure = "error_load";
+      } else {
+        this._firstLoadFailed();
+      }
+    } finally {
+      if (token === this._loadToken) this._loading = false;
     }
-    await this._loadProgram(target, cursor);
   }
 
-  private async _savePending(): Promise<void> {
-    if ((await this._save()) && this._pending) await this._switchTo(this._pending);
+  private _showDay(data: ProgramData, target: Target, cursor: number): void {
+    const values = data.weekdays[target.day];
+    this._data = data;
+    this._shown = target;
+    this._loadFailed = false;
+    this._failure = undefined;
+    this._state = {
+      values: values.slice(),
+      saved: values.slice(),
+      cursor,
+      min: data.min_temp,
+      max: data.max_temp,
+    };
   }
 
   private _discardPending(): void {
@@ -394,7 +423,7 @@ export class ChronothermostatEditorCard extends LitElement {
 
   private _hold(button: HoldButton): void {
     const state = this._state;
-    if (!state) return;
+    if (!state || this._loading) return;
     if (button === "prev") this._state = moveCursor(state, -1);
     else if (button === "next") this._state = moveCursor(state, 1);
     else if (button === "cont") this._edit(continueNext(state));
@@ -406,51 +435,59 @@ export class ChronothermostatEditorCard extends LitElement {
     this._state = next;
     this._failure = undefined;
     this._clearSaved();
+    // Edits undone: the pending switch no longer needs a decision, drop it with its bar.
+    if (this._pending && !isDirty(next)) this._pending = undefined;
   }
 
   private _onChartDown(ev: PointerEvent): void {
     const state = this._state;
     const box = (ev.currentTarget as Element).getBoundingClientRect();
-    if (!state || box.width <= 0) return;
+    if (!state || this._loading || box.width <= 0) return;
     const x = ((ev.clientX - box.left) / box.width) * this._chartWidth;
     const slot = slotFromX(x, { width: this._chartWidth, padLeft: CHART_PAD_LEFT });
     this._state = setCursor(state, slot);
   }
 
   private _toggleCopy(): void {
-    this._copyOpen = !this._copyOpen;
+    if (!this._loading) this._copyOpen = !this._copyOpen;
   }
 
   private _copyFrom(day: WeekdayKey): void {
     this._copyOpen = false;
-    if (!this._state || !this._data) return;
+    if (!this._state || !this._data || this._loading) return;
     this._edit(replaceValues(this._state, this._data.weekdays[day]));
   }
 
   // ---- saving --------------------------------------------------------------------------------
 
-  private _onSave(): void {
-    void this._save();
+  /** Main Save and the bar's Save: save the day, then run the pending switch if there is one. */
+  private async _saveAndContinue(): Promise<void> {
+    if (!(await this._save())) return;
+    const target = this._pending;
+    // Edits made while the save was in flight keep the bar instead of being overwritten.
+    if (target && this._state && !isDirty(this._state)) await this._switchTo(target);
   }
 
   private async _save(): Promise<boolean> {
     const hass = this.hass;
     const config = this._config;
     const state = this._state;
-    if (!hass || !config || !state || this._saving) return false;
-    const program = this._program;
-    const day = this._day;
+    const shown = this._shown;
+    if (!hass || !config || !state || !shown || this._saving || this._loading) return false;
     const values = state.values.slice();
+    const token = this._loadToken;
     this._saving = true;
     try {
-      await setProgram(hass, config.entity, program, day, values);
-      const data = await getProgram(hass, config.entity, program);
-      const sameDay = program === this._program && day === this._day;
-      if (program === this._program && validWeek(data)) this._data = data;
-      // Mark what was sent as saved: edits made while the request was in flight stay unsaved.
-      if (sameDay && this._state) this._state = { ...this._state, saved: values };
+      await setProgram(hass, config.entity, shown.program, shown.day, values);
+      const data = await getProgram(hass, config.entity, shown.program);
+      if (token === this._loadToken && this._state) {
+        // Still on the saved day: mark what was sent as saved (edits made while the request
+        // was in flight stay unsaved).
+        if (validWeek(data)) this._data = data;
+        this._state = { ...this._state, saved: values };
+      }
       this._failure = undefined;
-      this._flashSaved(day);
+      this._flashSaved(shown.day);
       return true;
     } catch {
       this._failure = "error_save";
@@ -588,6 +625,9 @@ export class ChronothermostatEditorCard extends LitElement {
     }
     .chart {
       margin-top: 4px;
+    }
+    .loading {
+      opacity: 0.5;
     }
     .chart svg {
       display: block;
