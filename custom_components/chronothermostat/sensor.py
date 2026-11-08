@@ -78,8 +78,19 @@ class ZoneStatusSensor(ChronoEntity, SensorEntity):
 
     @callback
     def _handle_zone_change(self, event: Event[EventStateChangedData]) -> None:
-        """Write the new state."""
+        """Follow the zone's name and write the new state."""
+        self._refresh_zone_name()
         self.async_write_ha_state()
+
+    @callback
+    def _refresh_zone_name(self) -> None:
+        """Take the zone's current friendly name (its climate may load later)."""
+        name = self._engine.zone_name(self._zone_id)
+        if self._attr_translation_placeholders.get("zone") != name:
+            self._attr_translation_placeholders = {"zone": name}
+            # The entity name is cached; drop it, as Home Assistant's Hue
+            # integration does, so the new placeholder is used.
+            self.__dict__.pop("name", None)
 
     @property
     def available(self) -> bool:

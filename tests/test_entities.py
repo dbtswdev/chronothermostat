@@ -156,3 +156,24 @@ async def test_zone_sensor_exposes_return_at(hass, setup_at):
     assert data.engine.return_at == value
     exposed = hass.states.get(SENSOR_A).attributes["return_at"]
     assert datetime.fromisoformat(exposed) == value
+
+
+async def test_zone_sensor_name_follows_the_zone_once_it_appears(hass, setup_at):
+    sensor_b = "sensor.chronothermostat_zone_b_status"
+    # On a real boot the climate integrations often load after this one.
+    hass.states.async_remove("climate.zone_b")
+    await setup_at(NOW)
+    assert (
+        hass.states.get(sensor_b).attributes["friendly_name"]
+        == "Chronothermostat zone_b status"
+    )
+
+    hass.states.async_set(
+        "climate.zone_b", "heat", {"temperature": 19.0, "friendly_name": "Zone B"}
+    )
+    await hass.async_block_till_done()
+
+    assert (
+        hass.states.get(sensor_b).attributes["friendly_name"]
+        == "Chronothermostat Zone B status"
+    )
