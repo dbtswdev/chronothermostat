@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChronothermostatEditorCard } from "../src/editor-card";
+import { ChronothermostatViewerCard } from "../src/viewer-card";
 import {
   ChronothermostatZoneCardEditor, ZONE_CARD_EDITOR_TAG,
 } from "../src/shared/zone-card-editor";
@@ -43,6 +44,17 @@ describe("zone card editor", () => {
     ]);
     expect(form.computeLabel({ name: "entity" })).toBe("Termostato");
     expect(form.computeLabel({ name: "name" })).toBe("Nome (facoltativo)");
+  });
+
+  it("gives the viewer card an entity-only editor (it shows no name)", async () => {
+    const el = ChronothermostatViewerCard.getConfigElement() as ChronothermostatZoneCardEditor;
+    el.hass = { callWS: vi.fn(), callService: vi.fn(), states: {}, locale: { language: "en" } } as never;
+    el.setConfig({ entity: "climate.zone_a" });
+    document.body.appendChild(el);
+    await el.updateComplete;
+    const form = el.shadowRoot?.querySelector("ha-form") as HaFormLike;
+    expect(form.schema).toEqual([{ name: "entity", selector: { entity: { domain: "climate" } } }]);
+    expect(form.computeLabel({ name: "entity" })).toBe("Thermostat");
   });
 
   it("emits config-changed and drops an empty name", async () => {

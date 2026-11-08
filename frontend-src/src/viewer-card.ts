@@ -3,7 +3,7 @@ import type { Hass } from "./shared/api";
 import { SLOTS, barGeometry, tempRange } from "./shared/chart";
 import { formatReturn, formatTemp, formatUntil, weekdayKeyOf, weekdayName } from "./shared/format";
 import { langOf, t, type Lang, type StringKey } from "./shared/i18n";
-import { ZONE_CARD_EDITOR_TAG, type ZoneCardConfig } from "./shared/zone-card-editor";
+import { VIEWER_CARD_EDITOR_TAG, type ZoneCardConfig } from "./shared/zone-card-editor";
 
 export const VIEWER_CARD_TAG = "chronothermostat-viewer-card";
 
@@ -47,7 +47,7 @@ export class ChronothermostatViewerCard extends LitElement {
   }
 
   static getConfigElement(): HTMLElement {
-    return document.createElement(ZONE_CARD_EDITOR_TAG);
+    return document.createElement(VIEWER_CARD_EDITOR_TAG);
   }
 
   static getStubConfig(hass?: Hass): ZoneCardConfig {

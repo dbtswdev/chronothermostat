@@ -2,10 +2,13 @@ import { LitElement, css, html, nothing, type PropertyValues, type TemplateResul
 import { getInfo, setScenario, type Hass, type Info, type Scenario } from "./shared/api";
 import { formatReturn } from "./shared/format";
 import { langOf, t, type Lang } from "./shared/i18n";
+import { CardConfigEditor, NAME_FIELD, type FormField } from "./shared/zone-card-editor";
 
 export const SCENARIO_CARD_TAG = "chronothermostat-scenario-card";
+export const SCENARIO_CARD_EDITOR_TAG = "chronothermostat-scenario-card-editor";
 
 export interface ScenarioCardConfig {
+  type?: string;
   name?: string;
 }
 
@@ -69,6 +72,10 @@ export class ChronothermostatScenarioCard extends LitElement {
     this._config = {};
     this._infoFailed = false;
     this._busy = false;
+  }
+
+  static getConfigElement(): HTMLElement {
+    return document.createElement(SCENARIO_CARD_EDITOR_TAG);
   }
 
   static getStubConfig(): ScenarioCardConfig {
@@ -335,4 +342,11 @@ export class ChronothermostatScenarioCard extends LitElement {
       overflow-wrap: anywhere;
     }
   `;
+}
+
+/** Visual config editor of the scenario card: the optional name. */
+export class ChronothermostatScenarioCardEditor extends CardConfigEditor<ScenarioCardConfig> {
+  protected get schema(): FormField[] {
+    return [NAME_FIELD];
+  }
 }

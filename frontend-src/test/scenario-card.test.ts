@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../src/index";
-import type { ChronothermostatScenarioCard } from "../src/scenario-card";
+import { ChronothermostatScenarioCard } from "../src/scenario-card";
 
 const SELECT = "select.chronothermostat_scenario";
 const RETURN_AT = "datetime.chronothermostat_return_at";
@@ -283,5 +283,34 @@ describe("scenario card", () => {
     expect(() => el.setConfig({})).not.toThrow();
     expect(el.getCardSize()).toBe(3);
     expect((el.constructor as unknown as { getStubConfig(): unknown }).getStubConfig()).toEqual({});
+  });
+
+  it("has a visual editor with the optional name", async () => {
+    const editor = ChronothermostatScenarioCard.getConfigElement() as HTMLElement & {
+      hass: unknown;
+      setConfig(config: unknown): void;
+      updateComplete: Promise<unknown>;
+    };
+    expect(editor.tagName.toLowerCase()).toBe("chronothermostat-scenario-card-editor");
+    editor.hass = makeHass("work", "unknown", "it");
+    editor.setConfig({ type: "custom:chronothermostat-scenario-card" });
+    document.body.appendChild(editor);
+    await editor.updateComplete;
+    const form = editor.shadowRoot?.querySelector("ha-form") as HTMLElement & {
+      schema: unknown;
+      computeLabel: (item: { name: string }) => string;
+    };
+    expect(form.schema).toEqual([{ name: "name", selector: { text: {} } }]);
+    expect(form.computeLabel({ name: "name" })).toBe("Nome (facoltativo)");
+    const seen: unknown[] = [];
+    editor.addEventListener("config-changed", (ev) => seen.push((ev as CustomEvent).detail.config));
+    for (const name of ["Casa", ""]) {
+      const value = { type: "custom:chronothermostat-scenario-card", name };
+      form.dispatchEvent(new CustomEvent("value-changed", { detail: { value }, bubbles: true }));
+    }
+    expect(seen).toEqual([
+      { type: "custom:chronothermostat-scenario-card", name: "Casa" },
+      { type: "custom:chronothermostat-scenario-card" },
+    ]);
   });
 });
