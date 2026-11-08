@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+import asyncio
+from collections.abc import Coroutine
+from dataclasses import dataclass
 from datetime import datetime
 import logging
 from typing import Any
@@ -34,6 +36,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_time_change,
 )
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from . import rules
@@ -51,7 +54,13 @@ from .storage import ProgramStore
 
 _LOGGER = logging.getLogger(__name__)
 
-TargetRule = Callable[[Scenario, ZoneState, Week | None, datetime], float | None]
+
+@dataclass(frozen=True)
+class PendingCommand:
+    """Parts of a zone command that have not been delivered yet."""
+
+    hvac_mode: str | None
+    temperature: float | None
 
 
 def _is_future(value: datetime | None) -> bool:
@@ -84,9 +93,11 @@ class Engine:
         self.entry_id = entry_id
         self.store = store
         self.zone_ids = zone_ids
-        self._pending: dict[str, float] = {}
+        self._pending: dict[str, PendingCommand] = {}
+        self._lock = asyncio.Lock()
         self._unsub_quarter: CALLBACK_TYPE | None = None
         self._unsub_return: CALLBACK_TYPE | None = None
+        self._unsub_started: CALLBACK_TYPE | None = None
 
     @property
     def scenario(self) -> Scenario:
@@ -99,26 +110,20 @@ class Engine:
         return self.store.return_at
 
     async def async_start(self) -> None:
-        """Start the quarter timer and bring the zones in line (§4.11)."""
+        """Start the timers; zone work waits until Home Assistant has started."""
         self._unsub_quarter = async_track_time_change(
             self.hass, self._on_quarter, minute=[0, 15, 30, 45], second=0
         )
-        return_at = self.return_at
-        if (
-            self.scenario is Scenario.AWAY
-            and return_at is not None
-            and return_at <= dt_util.utcnow()
-        ):
-            await self.async_set_scenario(Scenario.WORK, source="startup")
-            return
-        self._arm_return_timer()
-        await self._async_send_targets(rules.startup_target, dt_util.now(), "startup")
+        if _is_future(self.return_at):
+            self._arm_return_timer()
+        self._unsub_started = async_at_started(self.hass, self._async_startup)
 
     async def async_stop(self) -> None:
-        """Cancel every timer; safe to call more than once."""
-        if self._unsub_quarter is not None:
-            self._unsub_quarter()
-            self._unsub_quarter = None
+        """Cancel every timer and listener; safe to call more than once."""
+        for unsub in (self._unsub_quarter, self._unsub_started):
+            if unsub is not None:
+                unsub()
+        self._unsub_quarter = self._unsub_started = None
         self._cancel_return_timer()
 
     async def async_set_scenario(
@@ -192,12 +197,41 @@ class Engine:
             _as_float(attributes.get(ATTR_MAX_TEMP), DEFAULT_MAX_TEMP),
         )
 
+    async def _async_startup(self, _hass: HomeAssistant) -> None:
+        """Bring the zones in line once Home Assistant has started (§4.11).
+
+        Away whose return time passed while Home Assistant was down switches
+        to work. Otherwise, in work or holiday, zones that are on get the
+        current value and zones not available yet keep it as pending.
+        """
+        self._unsub_started = None
+        return_at = self.return_at
+        if (
+            self.scenario is Scenario.AWAY
+            and return_at is not None
+            and return_at <= dt_util.utcnow()
+        ):
+            await self.async_set_scenario(Scenario.WORK, source="startup")
+            return
+        async with self._lock:
+            scenario = self.scenario
+            local_now = dt_util.now()
+            for zone_id in self.zone_ids:
+                zone = self.zone_state(zone_id)
+                week = self._week(zone_id, scenario)
+                if zone.hvac_mode is None:
+                    target = rules.zone_turned_on_target(scenario, week, local_now)
+                else:
+                    target = rules.startup_target(scenario, zone, week, local_now)
+                if target is not None:
+                    await self._send(
+                        zone_id, hvac_mode=None, temperature=target, reason="startup"
+                    )
+
     @callback
     def _on_quarter(self, now: datetime) -> None:
         """Handle a quarter-hour tick (§4.4)."""
-        self._create_task(
-            self._async_send_targets(rules.tick_target, dt_util.as_local(now), "step")
-        )
+        self._create_task(self._async_quarter(dt_util.as_local(now)))
 
     @callback
     def _on_return(self, _now: datetime) -> None:
@@ -215,39 +249,44 @@ class Engine:
     async def _async_change_scenario(
         self, scenario: Scenario, return_at: datetime | None, reason: str
     ) -> None:
-        """Persist an already validated scenario and apply it to every zone."""
-        self.store.set_scenario(scenario, return_at)
-        await self.store.async_save()
-        self._arm_return_timer()
-        self._dispatch()
-        self._pending.clear()
-        local_now = dt_util.now()
-        for zone_id in self.zone_ids:
-            if self.hass.states.get(zone_id) is None:
-                continue
-            hvac_mode, temperature = rules.scenario_change(
-                scenario, self._week(zone_id, scenario), local_now
-            )
-            await self._send(
-                zone_id, hvac_mode=hvac_mode, temperature=temperature, reason=reason
-            )
+        """Persist an already validated scenario and apply it to every zone.
 
-    async def _async_send_targets(
-        self, rule: TargetRule, local_now: datetime, reason: str
-    ) -> None:
-        """Send each zone the setpoint chosen by a target rule, if any."""
-        scenario = self.scenario
-        for zone_id in self.zone_ids:
-            target = rule(
-                scenario,
-                self.zone_state(zone_id),
-                self._week(zone_id, scenario),
-                local_now,
-            )
-            if target is not None:
-                await self._send(
-                    zone_id, hvac_mode=None, temperature=target, reason=reason
+        Runs under the engine lock, so concurrent changes apply one after the
+        other and the zones end in the last scenario's state.
+        """
+        async with self._lock:
+            self.store.set_scenario(scenario, return_at)
+            await self.store.async_save()
+            self._arm_return_timer()
+            self._dispatch()
+            self._pending.clear()
+            local_now = dt_util.now()
+            for zone_id in self.zone_ids:
+                hvac_mode, temperature = rules.scenario_change(
+                    scenario, self._week(zone_id, scenario), local_now
                 )
+                await self._send(
+                    zone_id,
+                    hvac_mode=hvac_mode,
+                    temperature=temperature,
+                    reason=reason,
+                )
+
+    async def _async_quarter(self, local_now: datetime) -> None:
+        """Send each zone that is on its program step, if any."""
+        async with self._lock:
+            scenario = self.scenario
+            for zone_id in self.zone_ids:
+                target = rules.tick_target(
+                    scenario,
+                    self.zone_state(zone_id),
+                    self._week(zone_id, scenario),
+                    local_now,
+                )
+                if target is not None:
+                    await self._send(
+                        zone_id, hvac_mode=None, temperature=target, reason="step"
+                    )
 
     def _week(self, zone_id: str, scenario: Scenario) -> Week | None:
         """Return the zone's week for a program scenario, else None."""
@@ -282,39 +321,51 @@ class Engine:
     ) -> None:
         """Send hvac mode then temperature to a zone's climate.
 
-        A temperature that cannot be delivered (zone unavailable, unknown or
-        missing, or a failed service call) is kept as pending for that zone.
+        Parts that cannot be delivered (zone unavailable, unknown or missing,
+        or a failed service call) become the zone's pending command; parts
+        delivered now drop out of it.
         """
+        mode_left, temperature_left = hvac_mode, temperature
         if self.zone_state(zone_id).hvac_mode is None:
-            if temperature is not None:
-                self._pending[zone_id] = temperature
-            _LOGGER.debug("%s: unavailable, nothing sent (%s)", zone_id, reason)
-            return
-        try:
-            if hvac_mode is not None:
-                await self.hass.services.async_call(
-                    CLIMATE_DOMAIN,
-                    SERVICE_SET_HVAC_MODE,
-                    {ATTR_ENTITY_ID: zone_id, ATTR_HVAC_MODE: hvac_mode},
-                    blocking=True,
-                )
-                _LOGGER.info(
-                    "%s: set %s (%s)", zone_id, f"hvac_mode {hvac_mode}", reason
-                )
-            if temperature is not None:
-                await self.hass.services.async_call(
-                    CLIMATE_DOMAIN,
-                    SERVICE_SET_TEMPERATURE,
-                    {ATTR_ENTITY_ID: zone_id, ATTR_TEMPERATURE: temperature},
-                    blocking=True,
-                )
-                _LOGGER.info(
-                    "%s: set %s (%s)", zone_id, f"temperature {temperature}", reason
-                )
-        except HomeAssistantError as err:
-            if temperature is not None:
-                self._pending[zone_id] = temperature
-            _LOGGER.warning("%s: command failed (%s): %s", zone_id, reason, err)
-            return
-        if temperature is not None:
-            self._pending.pop(zone_id, None)
+            _LOGGER.debug("%s: unavailable, command kept pending (%s)", zone_id, reason)
+        else:
+            try:
+                if mode_left is not None:
+                    await self._call(
+                        zone_id,
+                        SERVICE_SET_HVAC_MODE,
+                        ATTR_HVAC_MODE,
+                        mode_left,
+                        reason,
+                    )
+                    mode_left = None
+                if temperature_left is not None:
+                    await self._call(
+                        zone_id,
+                        SERVICE_SET_TEMPERATURE,
+                        ATTR_TEMPERATURE,
+                        temperature_left,
+                        reason,
+                    )
+                    temperature_left = None
+            except HomeAssistantError as err:
+                _LOGGER.warning("%s: command failed (%s): %s", zone_id, reason, err)
+        old = self._pending.pop(zone_id, PendingCommand(None, None))
+        pending = PendingCommand(
+            mode_left if hvac_mode is not None else old.hvac_mode,
+            temperature_left if temperature is not None else old.temperature,
+        )
+        if pending != PendingCommand(None, None):
+            self._pending[zone_id] = pending
+
+    async def _call(
+        self, zone_id: str, service: str, attribute: str, value: Any, reason: str
+    ) -> None:
+        """Call a climate service on one zone and log the command."""
+        await self.hass.services.async_call(
+            CLIMATE_DOMAIN,
+            service,
+            {ATTR_ENTITY_ID: zone_id, attribute: value},
+            blocking=True,
+        )
+        _LOGGER.info("%s: set %s (%s)", zone_id, f"{attribute} {value}", reason)

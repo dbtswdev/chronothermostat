@@ -1,15 +1,21 @@
 """Tests for scenario changes, the return timer and startup."""
 
+import asyncio
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from homeassistant.const import EVENT_CALL_SERVICE
-from homeassistant.core import callback
+from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from pytest_homeassistant_custom_component.common import async_capture_events
+from pytest_homeassistant_custom_component.common import (
+    async_capture_events,
+    async_mock_service,
+)
 
 from custom_components.chronothermostat.const import SIGNAL_UPDATED, Scenario
+from custom_components.chronothermostat.engine import PendingCommand
 
 ROME = ZoneInfo("Europe/Rome")
 ZONE_A = "climate.zone_a"
@@ -40,6 +46,21 @@ def off(zone_id: str) -> tuple[str, dict]:
 
 def temperature(zone_id: str, value: float) -> tuple[str, dict]:
     return ("set_temperature", {"entity_id": zone_id, "temperature": value})
+
+
+def prime_away_storage(hass_storage, entry_id: str, return_at: datetime) -> None:
+    """Persist an away scenario with a return time before setup."""
+    key = f"chronothermostat.{entry_id}"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {
+            "scenario": "away",
+            "return_at": return_at.astimezone(UTC).isoformat(),
+            "zones": {},
+        },
+    }
 
 
 def stored(hass_storage, entry_id: str) -> dict:
@@ -215,17 +236,7 @@ async def test_set_return_at_rearms_return_timer(hass, setup_at, time_travel):
 async def test_startup_switches_to_work_when_return_passed(
     hass, hass_storage, config_entry, setup_at
 ):
-    key = f"chronothermostat.{config_entry.entry_id}"
-    hass_storage[key] = {
-        "version": 1,
-        "minor_version": 1,
-        "key": key,
-        "data": {
-            "scenario": "away",
-            "return_at": at(10, 7).astimezone(UTC).isoformat(),
-            "zones": {},
-        },
-    }
+    prime_away_storage(hass_storage, config_entry.entry_id, at(10, 7))
     events = async_capture_events(hass, EVENT_CALL_SERVICE)
 
     data = await setup_at(at(10, 8))
@@ -252,3 +263,113 @@ async def test_startup_applies_current_value_to_zones_on(hass, setup_at):
 
     # 05:00 is in the default night band (16.0); the off zone is left alone.
     assert commands(events) == [temperature(ZONE_A, 16.0)]
+
+
+async def test_concurrent_scenario_changes_apply_in_order(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    sent = []
+
+    async def slow_climate_service(call):
+        value = call.data.get("hvac_mode", call.data.get("temperature"))
+        sent.append((call.data["entity_id"], value))
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    for service in ("set_hvac_mode", "set_temperature"):
+        hass.services.async_register("climate", service, slow_climate_service)
+
+    first = hass.async_create_task(data.engine.async_set_scenario(Scenario.HOLIDAY))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await first
+
+    assert data.engine.scenario is Scenario.OFF
+    assert sent == [
+        (ZONE_A, "heat"),
+        (ZONE_A, 19.0),
+        (ZONE_B, "heat"),
+        (ZONE_B, 19.0),
+        (ZONE_A, "off"),
+        (ZONE_B, "off"),
+    ]
+
+
+async def test_unavailable_zone_keeps_scenario_command_pending(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    hass.states.async_set(ZONE_B, "unavailable")
+    events = async_capture_events(hass, EVENT_CALL_SERVICE)
+
+    await data.engine.async_set_scenario(Scenario.OFF)
+
+    assert commands(events) == [off(ZONE_A)]
+    assert data.engine._pending == {ZONE_B: PendingCommand("off", None)}
+
+
+async def test_missing_zone_keeps_scenario_command_pending(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    hass.states.async_remove(ZONE_B)
+    events = async_capture_events(hass, EVENT_CALL_SERVICE)
+
+    await data.engine.async_set_scenario(Scenario.WORK)
+
+    assert commands(events) == [heat(ZONE_A), temperature(ZONE_A, 19.0)]
+    assert data.engine._pending == {ZONE_B: PendingCommand("heat", 19.0)}
+
+
+async def test_failed_temperature_keeps_only_temperature_pending(hass, setup_at):
+    data = await setup_at(at(10, 8))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    async_mock_service(
+        hass,
+        "climate",
+        "set_temperature",
+        raise_exception=HomeAssistantError("climate failure"),
+    )
+
+    await data.engine.async_set_scenario(Scenario.WORK)
+
+    assert data.engine._pending == {
+        ZONE_A: PendingCommand(None, 19.0),
+        ZONE_B: PendingCommand(None, 19.0),
+    }
+
+
+async def test_startup_waits_for_home_assistant_started(hass, setup_at):
+    hass.set_state(CoreState.not_running)
+    hass.states.async_remove(ZONE_B)
+    events = async_capture_events(hass, EVENT_CALL_SERVICE)
+
+    data = await setup_at(at(10, 8))
+    assert commands(events) == []
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+
+    assert commands(events) == [temperature(ZONE_A, 19.0)]
+    # The zone not loaded yet gets the current value once it is back on.
+    assert data.engine._pending == {ZONE_B: PendingCommand(None, 19.0)}
+
+
+async def test_startup_return_check_waits_for_home_assistant_started(
+    hass, hass_storage, config_entry, setup_at
+):
+    prime_away_storage(hass_storage, config_entry.entry_id, at(10, 7))
+    hass.set_state(CoreState.not_running)
+    events = async_capture_events(hass, EVENT_CALL_SERVICE)
+
+    data = await setup_at(at(10, 8))
+    assert data.engine.scenario is Scenario.AWAY
+    assert commands(events) == []
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+
+    assert data.engine.scenario is Scenario.WORK
+    assert commands(events) == [
+        heat(ZONE_A),
+        temperature(ZONE_A, 19.0),
+        heat(ZONE_B),
+        temperature(ZONE_B, 19.0),
+    ]
