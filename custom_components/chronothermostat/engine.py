@@ -7,7 +7,7 @@ from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 import logging
-from typing import Any
+from typing import Any, TypeIs
 
 from homeassistant.components.climate import (
     ATTR_HVAC_MODE,
@@ -26,7 +26,10 @@ from homeassistant.const import (
 )
 from homeassistant.core import (
     CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
     HomeAssistant,
+    State,
     callback,
     split_entity_id,
 )
@@ -34,6 +37,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_track_point_in_time,
+    async_track_state_change_event,
     async_track_time_change,
 )
 from homeassistant.helpers.start import async_at_started
@@ -44,15 +48,20 @@ from .const import (
     DEFAULT_MAX_TEMP,
     DEFAULT_MIN_TEMP,
     DOMAIN,
+    HVAC_OFF,
     PROGRAM_SCENARIOS,
     SIGNAL_UPDATED,
+    WEEKDAYS,
     Scenario,
 )
-from .program import Week
+from .program import Week, is_step, normalize_day, slot_index, weekday_key
 from .status import ZoneState, ZoneStatus, compute_zone_status
 from .storage import ProgramStore
 
 _LOGGER = logging.getLogger(__name__)
+
+# Seconds a climate service call may take before it counts as undelivered.
+CALL_TIMEOUT = 10
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,27 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
+def _is_available(state: State | None) -> TypeIs[State]:
+    """Return True if a climate state exists and is not unavailable or unknown."""
+    return state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+
+
+def _step_value(week: Week | None, local_now: datetime) -> float | None:
+    """Return the program value of the current quarter if it is a step."""
+    if week is None:
+        return None
+    weekday, slot = weekday_key(local_now), slot_index(local_now)
+    if not is_step(week, weekday, slot):
+        return None
+    return week[weekday][slot]
+
+
+def _check_weekday(weekday: str) -> None:
+    """Raise ValueError unless weekday is one of the seven weekday keys."""
+    if weekday not in WEEKDAYS:
+        raise ValueError(f"Invalid weekday {weekday!r}")
+
+
 class Engine:
     """Drives the zones from their programs."""
 
@@ -98,6 +128,7 @@ class Engine:
         self._unsub_quarter: CALLBACK_TYPE | None = None
         self._unsub_return: CALLBACK_TYPE | None = None
         self._unsub_started: CALLBACK_TYPE | None = None
+        self._unsub_zones: CALLBACK_TYPE | None = None
 
     @property
     def scenario(self) -> Scenario:
@@ -114,16 +145,19 @@ class Engine:
         self._unsub_quarter = async_track_time_change(
             self.hass, self._on_quarter, minute=[0, 15, 30, 45], second=0
         )
+        self._unsub_zones = async_track_state_change_event(
+            self.hass, self.zone_ids, self._on_zone_change
+        )
         if _is_future(self.return_at):
             self._arm_return_timer()
         self._unsub_started = async_at_started(self.hass, self._async_startup)
 
     async def async_stop(self) -> None:
         """Cancel every timer and listener; safe to call more than once."""
-        for unsub in (self._unsub_quarter, self._unsub_started):
+        for unsub in (self._unsub_quarter, self._unsub_zones, self._unsub_started):
             if unsub is not None:
                 unsub()
-        self._unsub_quarter = self._unsub_started = None
+        self._unsub_quarter = self._unsub_zones = self._unsub_started = None
         self._cancel_return_timer()
 
     async def async_set_scenario(
@@ -155,15 +189,38 @@ class Engine:
         """Store a new return time (naive or past means none) and re-arm."""
         if not _is_future(return_at):
             return_at = None
-        self.store.set_scenario(self.scenario, return_at)
-        await self.store.async_save()
-        self._arm_return_timer()
-        self._dispatch()
+        async with self._lock:
+            self.store.set_scenario(self.scenario, return_at)
+            await self.store.async_save()
+            self._arm_return_timer()
+            self._dispatch()
+
+    async def async_save_day(
+        self, zone_id: str, scenario: Scenario, weekday: str, values: list[float]
+    ) -> None:
+        """Save one program day and apply it if it changes the current value.
+
+        Raises ValueError for a zone that is not configured, a scenario
+        without a program, an invalid weekday or invalid values; storage is
+        left untouched and nothing is sent.
+        """
+        async with self._lock:
+            await self._async_save_day(zone_id, scenario, weekday, values)
+
+    async def async_copy_day(
+        self, zone_id: str, scenario: Scenario, from_weekday: str, to_weekday: str
+    ) -> None:
+        """Copy the saved values of one program day onto another day."""
+        async with self._lock:
+            scenario = self._program_scenario(zone_id, scenario)
+            _check_weekday(from_weekday)
+            values = self.store.get_week(zone_id, scenario)[from_weekday]
+            await self._async_save_day(zone_id, scenario, to_weekday, values)
 
     def zone_state(self, zone_id: str) -> ZoneState:
         """Return the observed state of a zone's climate entity."""
         state = self.hass.states.get(zone_id)
-        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if not _is_available(state):
             return ZoneState(None, None)
         return ZoneState(state.state, state.attributes.get(ATTR_TEMPERATURE))
 
@@ -200,20 +257,22 @@ class Engine:
     async def _async_startup(self, _hass: HomeAssistant) -> None:
         """Bring the zones in line once Home Assistant has started (§4.11).
 
-        Away whose return time passed while Home Assistant was down switches
-        to work. Otherwise, in work or holiday, zones that are on get the
-        current value and zones not available yet keep it as pending.
+        Configured zones missing from the states are logged; they are
+        skipped until they appear. Away whose return time passed while Home
+        Assistant was down switches to work. Otherwise, in work or holiday,
+        zones that are on get the current value and zones not available yet
+        keep it as pending.
         """
         self._unsub_started = None
-        return_at = self.return_at
-        if (
-            self.scenario is Scenario.AWAY
-            and return_at is not None
-            and return_at <= dt_util.utcnow()
-        ):
-            await self.async_set_scenario(Scenario.WORK, source="startup")
-            return
+        for zone_id in self.zone_ids:
+            if self.hass.states.get(zone_id) is None:
+                _LOGGER.warning(
+                    "Zone %s not found; it will be skipped until it appears", zone_id
+                )
         async with self._lock:
+            if self._return_due():
+                await self._async_apply_scenario(Scenario.WORK, None, "return")
+                return
             scenario = self.scenario
             local_now = dt_util.now()
             for zone_id in self.zone_ids:
@@ -237,9 +296,25 @@ class Engine:
     def _on_return(self, _now: datetime) -> None:
         """Switch to work when the away return time arrives (§4.7)."""
         self._unsub_return = None
-        self._create_task(
-            self._async_change_scenario(Scenario.WORK, None, "return")
-        )
+        self._create_task(self._async_return())
+
+    @callback
+    def _on_zone_change(self, event: Event[EventStateChangedData]) -> None:
+        """React to a zone coming back or being switched on by hand.
+
+        A zone becoming available (from missing, unavailable or unknown)
+        only gets its pending command: the Wall Display's short unavailable
+        blip after each command is neither "switched on" nor "switched off".
+        """
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+        if not _is_available(new_state):
+            return
+        zone_id = event.data["entity_id"]
+        if not _is_available(old_state):
+            self._create_task(self._async_zone_available(zone_id))
+        elif old_state.state == HVAC_OFF and new_state.state != HVAC_OFF:
+            self._create_task(self._async_zone_turned_on(zone_id))
 
     @callback
     def _create_task(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -249,44 +324,157 @@ class Engine:
     async def _async_change_scenario(
         self, scenario: Scenario, return_at: datetime | None, reason: str
     ) -> None:
-        """Persist an already validated scenario and apply it to every zone.
+        """Apply an already validated scenario under the engine lock.
 
-        Runs under the engine lock, so concurrent changes apply one after the
-        other and the zones end in the last scenario's state.
+        Concurrent changes apply one after the other, so the zones end in the
+        last scenario's state.
         """
         async with self._lock:
-            self.store.set_scenario(scenario, return_at)
-            await self.store.async_save()
-            self._arm_return_timer()
-            self._dispatch()
-            self._pending.clear()
-            local_now = dt_util.now()
-            for zone_id in self.zone_ids:
-                hvac_mode, temperature = rules.scenario_change(
-                    scenario, self._week(zone_id, scenario), local_now
-                )
-                await self._send(
-                    zone_id,
-                    hvac_mode=hvac_mode,
-                    temperature=temperature,
-                    reason=reason,
-                )
+            await self._async_apply_scenario(scenario, return_at, reason)
+
+    async def _async_apply_scenario(
+        self, scenario: Scenario, return_at: datetime | None, reason: str
+    ) -> None:
+        """Persist a scenario and apply it to every zone (lock held)."""
+        self.store.set_scenario(scenario, return_at)
+        await self.store.async_save()
+        self._arm_return_timer()
+        self._dispatch()
+        self._pending.clear()
+        local_now = dt_util.now()
+        for zone_id in self.zone_ids:
+            hvac_mode, temperature = rules.scenario_change(
+                scenario, self._week(zone_id, scenario), local_now
+            )
+            await self._send(
+                zone_id,
+                hvac_mode=hvac_mode,
+                temperature=temperature,
+                reason=reason,
+            )
+
+    async def _async_return(self) -> None:
+        """Switch to work if the away return time is still due.
+
+        A scenario change or a new return time that took the lock first
+        wins over a stale return.
+        """
+        async with self._lock:
+            if self._return_due():
+                await self._async_apply_scenario(Scenario.WORK, None, "return")
+
+    def _return_due(self) -> bool:
+        """Return True when away has a return time that has arrived."""
+        return_at = self.return_at
+        return (
+            self.scenario is Scenario.AWAY
+            and return_at is not None
+            and return_at <= dt_util.utcnow()
+        )
 
     async def _async_quarter(self, local_now: datetime) -> None:
-        """Send each zone that is on its program step, if any."""
+        """Send each zone its program step, then retry other pending commands.
+
+        A step that falls while a zone is unavailable or missing is kept
+        pending for when the zone returns.
+        """
         async with self._lock:
             scenario = self.scenario
+            stepped: set[str] = set()
             for zone_id in self.zone_ids:
-                target = rules.tick_target(
-                    scenario,
-                    self.zone_state(zone_id),
-                    self._week(zone_id, scenario),
-                    local_now,
-                )
+                zone = self.zone_state(zone_id)
+                week = self._week(zone_id, scenario)
+                if zone.hvac_mode is None:
+                    target = _step_value(week, local_now)
+                else:
+                    target = rules.tick_target(scenario, zone, week, local_now)
                 if target is not None:
                     await self._send(
                         zone_id, hvac_mode=None, temperature=target, reason="step"
                     )
+                    stepped.add(zone_id)
+            for zone_id in self.zone_ids:
+                if zone_id not in stepped:
+                    await self._async_retry(zone_id)
+
+    async def _async_zone_available(self, zone_id: str) -> None:
+        """Resend the pending command of a zone that became available."""
+        async with self._lock:
+            await self._async_retry(zone_id)
+
+    async def _async_zone_turned_on(self, zone_id: str) -> None:
+        """Send the current value to a zone switched on by hand (§4.6).
+
+        In away or off the zone is left alone.
+        """
+        async with self._lock:
+            scenario = self.scenario
+            target = rules.zone_turned_on_target(
+                scenario, self._week(zone_id, scenario), dt_util.now()
+            )
+            if target is not None:
+                await self._send(
+                    zone_id, hvac_mode=None, temperature=target, reason="zone_on"
+                )
+
+    async def _async_retry(self, zone_id: str) -> None:
+        """Resend a zone's pending command if the zone is available (lock held).
+
+        A pending hvac mode belongs to the current scenario and is always
+        resent. A temperature-only command is resent only while the scenario
+        has a program and the zone is on; otherwise it is dropped.
+        """
+        pending = self._pending.get(zone_id)
+        zone = self.zone_state(zone_id)
+        if pending is None or zone.hvac_mode is None:
+            return
+        if pending.hvac_mode is None and (
+            self.scenario not in PROGRAM_SCENARIOS or zone.hvac_mode == HVAC_OFF
+        ):
+            del self._pending[zone_id]
+            _LOGGER.debug(
+                "%s: zone is off, pending temperature %s dropped",
+                zone_id,
+                pending.temperature,
+            )
+            return
+        await self._send(
+            zone_id,
+            hvac_mode=pending.hvac_mode,
+            temperature=pending.temperature,
+            reason="retry",
+        )
+
+    async def _async_save_day(
+        self, zone_id: str, scenario: Scenario, weekday: str, values: list[float]
+    ) -> None:
+        """Validate, persist and apply one program day (lock held)."""
+        scenario = self._program_scenario(zone_id, scenario)
+        _check_weekday(weekday)
+        day = normalize_day(values, *self.min_max(zone_id))
+        old_week = self.store.get_week(zone_id, scenario)
+        self.store.set_day(zone_id, scenario, weekday, day)
+        await self.store.async_save()
+        target = rules.save_target(
+            self.scenario,
+            scenario,
+            self.zone_state(zone_id),
+            old_week,
+            self.store.get_week(zone_id, scenario),
+            dt_util.now(),
+        )
+        if target is not None:
+            await self._send(zone_id, hvac_mode=None, temperature=target, reason="save")
+        self._dispatch()
+
+    def _program_scenario(self, zone_id: str, scenario: Scenario | str) -> Scenario:
+        """Return the scenario of a zone program; raise ValueError if invalid."""
+        if zone_id not in self.zone_ids:
+            raise ValueError(f"Unknown zone {zone_id!r}")
+        scenario = Scenario(scenario)
+        if scenario not in PROGRAM_SCENARIOS:
+            raise ValueError(f"Scenario {scenario!s} has no program")
+        return scenario
 
     def _week(self, zone_id: str, scenario: Scenario) -> Week | None:
         """Return the zone's week for a program scenario, else None."""
@@ -321,35 +509,28 @@ class Engine:
     ) -> None:
         """Send hvac mode then temperature to a zone's climate.
 
-        Parts that cannot be delivered (zone unavailable, unknown or missing,
-        or a failed service call) become the zone's pending command; parts
-        delivered now drop out of it.
+        Parts that cannot be delivered (zone unavailable, unknown or missing
+        right before the call, a failed or timed out call) become the zone's
+        pending command; parts delivered now drop out of it. The temperature
+        is not sent while the hvac mode is undelivered.
         """
         mode_left, temperature_left = hvac_mode, temperature
-        if self.zone_state(zone_id).hvac_mode is None:
-            _LOGGER.debug("%s: unavailable, command kept pending (%s)", zone_id, reason)
-        else:
-            try:
-                if mode_left is not None:
-                    await self._call(
-                        zone_id,
-                        SERVICE_SET_HVAC_MODE,
-                        ATTR_HVAC_MODE,
-                        mode_left,
-                        reason,
-                    )
-                    mode_left = None
-                if temperature_left is not None:
-                    await self._call(
-                        zone_id,
-                        SERVICE_SET_TEMPERATURE,
-                        ATTR_TEMPERATURE,
-                        temperature_left,
-                        reason,
-                    )
-                    temperature_left = None
-            except HomeAssistantError as err:
-                _LOGGER.warning("%s: command failed (%s): %s", zone_id, reason, err)
+        if mode_left is not None and await self._call(
+            zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
+        ):
+            mode_left = None
+        if (
+            mode_left is None
+            and temperature_left is not None
+            and await self._call(
+                zone_id,
+                SERVICE_SET_TEMPERATURE,
+                ATTR_TEMPERATURE,
+                temperature_left,
+                reason,
+            )
+        ):
+            temperature_left = None
         old = self._pending.pop(zone_id, PendingCommand(None, None))
         pending = PendingCommand(
             mode_left if hvac_mode is not None else old.hvac_mode,
@@ -360,12 +541,39 @@ class Engine:
 
     async def _call(
         self, zone_id: str, service: str, attribute: str, value: Any, reason: str
-    ) -> None:
-        """Call a climate service on one zone and log the command."""
-        await self.hass.services.async_call(
-            CLIMATE_DOMAIN,
-            service,
-            {ATTR_ENTITY_ID: zone_id, attribute: value},
-            blocking=True,
-        )
-        _LOGGER.info("%s: set %s (%s)", zone_id, f"{attribute} {value}", reason)
+    ) -> bool:
+        """Call a climate service on one zone; return True if it was delivered.
+
+        Availability is checked right before the call: Home Assistant skips
+        unavailable entities without raising, so a call made during the Wall
+        Display's blip would be lost silently.
+        """
+        if self.zone_state(zone_id).hvac_mode is None:
+            _LOGGER.debug(
+                "%s: unavailable, set %s %s kept pending (%s)",
+                zone_id,
+                attribute,
+                value,
+                reason,
+            )
+            return False
+        try:
+            async with asyncio.timeout(CALL_TIMEOUT):
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    service,
+                    {ATTR_ENTITY_ID: zone_id, attribute: value},
+                    blocking=True,
+                )
+        except TimeoutError:
+            _LOGGER.warning(
+                "%s: set %s %s timed out (%s)", zone_id, attribute, value, reason
+            )
+            return False
+        except HomeAssistantError as err:
+            _LOGGER.warning(
+                "%s: set %s %s failed (%s): %s", zone_id, attribute, value, reason, err
+            )
+            return False
+        _LOGGER.info("%s: set %s %s (%s)", zone_id, attribute, value, reason)
+        return True
