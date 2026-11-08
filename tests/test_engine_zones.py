@@ -524,17 +524,90 @@ async def test_zone_unavailable_between_mode_and_temperature_keeps_it_pending(
 async def test_unavailable_blip_sends_nothing(hass, setup_at, climate_calls):
     temp_calls, mode_calls = climate_calls
     data = await setup_at(at(10, 8))
+    # Forced by hand to 17.0 (program 19.0): a blip must not undo it.
+    hand_target = {**ZONE_ATTRIBUTES, "temperature": 17.0}
+    hass.states.async_set(ZONE_A, "heat", hand_target)
+    await hass.async_block_till_done()
     temp_calls.clear()
     mode_calls.clear()
 
     hass.states.async_set(ZONE_A, "unavailable")
     await hass.async_block_till_done()
-    hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+    hass.states.async_set(ZONE_A, "heat", hand_target)
     await hass.async_block_till_done()
 
     assert temp_calls == []
     assert mode_calls == []
     assert data.engine._pending == {}
+
+
+async def test_zone_turned_on_during_blip_receives_current_value(
+    hass, setup_at, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    # Off before setup: the last known mode comes from the initial state.
+    hand_target = {**ZONE_ATTRIBUTES, "temperature": 17.0}
+    hass.states.async_set(ZONE_A, "off", hand_target)
+    data = await setup_at(at(10, 8))
+    data.store.set_day(ZONE_A, Scenario.WORK, "tue", [20.5] * 96)
+    temp_calls.clear()
+    mode_calls.clear()
+
+    # Switched on by hand, with the new state arriving after a blip.
+    hass.states.async_set(ZONE_A, "unavailable")
+    await hass.async_block_till_done()
+    hass.states.async_set(ZONE_A, "heat", hand_target)
+    await hass.async_block_till_done()
+
+    assert temperatures(temp_calls) == [(ZONE_A, 20.5)]
+    assert mode_calls == []
+    assert data.engine._pending == {}
+
+
+async def test_zone_turned_on_after_missed_step_gets_one_command(
+    hass, setup_at, time_travel, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    hand_target = {**ZONE_ATTRIBUTES, "temperature": 17.0}
+    hass.states.async_set(ZONE_A, "off", hand_target)
+    data = await setup_at(at(10, 6, 59, 59))
+    data.store.set_day(ZONE_A, Scenario.WORK, "tue", step_day(15.0, 19.0, SLOT_0700))
+    hass.states.async_set(ZONE_A, "unavailable")
+    await time_travel(at(10, 7))
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
+    temp_calls.clear()
+
+    # Comes back switched on: the switch-on value absorbs the pending step.
+    hass.states.async_set(ZONE_A, "heat", hand_target)
+    await hass.async_block_till_done()
+
+    assert temperatures(temp_calls) == [(ZONE_A, 19.0)]
+    assert mode_calls == []
+    assert data.engine._pending == {}
+
+
+@pytest.mark.parametrize("scenario", [Scenario.OFF, Scenario.AWAY])
+async def test_zone_turned_on_during_blip_in_off_scenario_is_left_alone(
+    hass, setup_at, climate_calls, scenario
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 8))
+    await data.engine.async_set_scenario(
+        scenario, at(11, 18) if scenario is Scenario.AWAY else None
+    )
+    hand_target = {**ZONE_ATTRIBUTES, "temperature": 17.0}
+    hass.states.async_set(ZONE_A, "off", hand_target)
+    await hass.async_block_till_done()
+    temp_calls.clear()
+    mode_calls.clear()
+
+    hass.states.async_set(ZONE_A, "unavailable")
+    await hass.async_block_till_done()
+    hass.states.async_set(ZONE_A, "heat", hand_target)
+    await hass.async_block_till_done()
+
+    assert temp_calls == []
+    assert mode_calls == []
 
 
 async def test_return_does_not_override_queued_scenario_change(

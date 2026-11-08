@@ -137,6 +137,8 @@ class Engine:
         self._unsub_return: CALLBACK_TYPE | None = None
         self._unsub_started: CALLBACK_TYPE | None = None
         self._unsub_zones: CALLBACK_TYPE | None = None
+        # Last hvac mode of each zone seen while it was available.
+        self._last_mode: dict[str, str] = {}
 
     @property
     def scenario(self) -> Scenario:
@@ -153,6 +155,10 @@ class Engine:
         self._unsub_quarter = async_track_time_change(
             self.hass, self._on_quarter, minute=[0, 15, 30, 45], second=0
         )
+        for zone_id in self.zone_ids:
+            state = self.hass.states.get(zone_id)
+            if _is_available(state):
+                self._last_mode[zone_id] = state.state
         self._unsub_zones = async_track_state_change_event(
             self.hass, self.zone_ids, self._on_zone_change
         )
@@ -308,21 +314,29 @@ class Engine:
 
     @callback
     def _on_zone_change(self, event: Event[EventStateChangedData]) -> None:
-        """React to a zone coming back or being switched on by hand.
+        """React to a zone switched on by hand or becoming available.
 
+        "Switched on" compares the new mode with the last mode seen while
+        the zone was available, so the Wall Display's short unavailable blip
+        after each command is neither "switched on" nor "switched off", and
+        a switch-on that reaches Home Assistant across a blip still counts.
         A zone becoming available (from missing, unavailable or unknown)
-        only gets its pending command: the Wall Display's short unavailable
-        blip after each command is neither "switched on" nor "switched off".
+        gets its pending command.
         """
-        old_state = event.data["old_state"]
         new_state = event.data["new_state"]
         if not _is_available(new_state):
             return
         zone_id = event.data["entity_id"]
-        if not _is_available(old_state):
-            self._create_task(self._async_zone_available(zone_id))
-        elif old_state.state == HVAC_OFF and new_state.state != HVAC_OFF:
-            self._create_task(self._async_zone_turned_on(zone_id))
+        last_mode = self._last_mode.get(zone_id)
+        self._last_mode[zone_id] = new_state.state
+        turned_on = last_mode == HVAC_OFF and new_state.state != HVAC_OFF
+        became_available = not _is_available(event.data["old_state"])
+        if turned_on or became_available:
+            self._create_task(
+                self._async_zone_event(
+                    zone_id, turned_on=turned_on, became_available=became_available
+                )
+            )
 
     @callback
     def _create_task(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -405,36 +419,39 @@ class Engine:
                 if zone_id not in stepped:
                     await self._async_retry(zone_id)
 
-    async def _async_zone_available(self, zone_id: str) -> None:
-        """Resend the pending command of a zone that became available."""
-        async with self._lock:
-            await self._async_retry(zone_id)
+    async def _async_zone_event(
+        self, zone_id: str, *, turned_on: bool, became_available: bool
+    ) -> None:
+        """Handle a zone switched on and/or becoming available.
 
-    async def _async_zone_turned_on(self, zone_id: str) -> None:
-        """Send the current value to a zone switched on by hand (§4.6).
-
-        In away or off the zone is left alone. A zone that already holds the
-        value is not sent it again: that is also the case when the engine
-        itself turned the zone on, since its own set_temperature lands under
-        the lock before this runs.
+        The switch-on value goes first, so it takes the place of a pending
+        temperature; the retry then resends whatever is still pending.
         """
         async with self._lock:
-            scenario = self.scenario
-            target = rules.zone_turned_on_target(
-                scenario, self._week(zone_id, scenario), dt_util.now()
-            )
-            if target is None:
-                return
-            current = self.zone_state(zone_id).target
-            if (
-                current is not None
-                and abs(round_half(current) - target) <= TEMP_TOLERANCE
-            ):
-                _LOGGER.debug("%s: turned on, already at %s", zone_id, target)
-                return
-            await self._send(
-                zone_id, hvac_mode=None, temperature=target, reason="zone_on"
-            )
+            if turned_on:
+                await self._async_send_turned_on_value(zone_id)
+            if became_available:
+                await self._async_retry(zone_id)
+
+    async def _async_send_turned_on_value(self, zone_id: str) -> None:
+        """Send the current value to a zone switched on by hand (lock held).
+
+        In away or off the zone is left alone (§4.6). A zone that already
+        holds the value is not sent it again: that is also the case when the
+        engine itself turned the zone on, since its own set_temperature lands
+        under the lock before this runs.
+        """
+        scenario = self.scenario
+        target = rules.zone_turned_on_target(
+            scenario, self._week(zone_id, scenario), dt_util.now()
+        )
+        if target is None:
+            return
+        current = self.zone_state(zone_id).target
+        if current is not None and abs(round_half(current) - target) <= TEMP_TOLERANCE:
+            _LOGGER.debug("%s: turned on, already at %s", zone_id, target)
+            return
+        await self._send(zone_id, hvac_mode=None, temperature=target, reason="zone_on")
 
     async def _async_retry(self, zone_id: str) -> None:
         """Resend a zone's pending command if the zone is available (lock held).
