@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import callback
 from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
@@ -44,6 +45,8 @@ class ChronothermostatConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Ask which climates are zones."""
+        if self.hass.config.units.temperature_unit != UnitOfTemperature.CELSIUS:
+            return self.async_abort(reason="celsius_only")
         errors: dict[str, str] = {}
         if user_input is not None:
             if user_input[CONF_ZONES]:

@@ -13,7 +13,8 @@
       "no_zones": "Select at least one zone."
     },
     "abort": {
-      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]"
+      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
+      "celsius_only": "Chronothermostat works only with temperatures in °C. Switch Home Assistant to the metric unit system to use it."
     }
   },
   "options": {

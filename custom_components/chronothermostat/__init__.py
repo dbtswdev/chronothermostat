@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
@@ -15,6 +17,8 @@ from .frontend import async_register_frontend
 from .services import async_register_services
 from .storage import ProgramStore
 from .websocket import async_register_websocket
+
+_LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -37,6 +41,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Chronothermostat from a config entry."""
+    if hass.config.units.temperature_unit != UnitOfTemperature.CELSIUS:
+        _LOGGER.error(
+            "Chronothermostat works only with temperatures in °C; "
+            "switch Home Assistant to the metric unit system"
+        )
+        return False
     await async_register_frontend(hass)
 
     zone_ids: list[str] = list(entry.options.get(CONF_ZONES, entry.data[CONF_ZONES]))

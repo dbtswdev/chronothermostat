@@ -13,7 +13,8 @@
       "no_zones": "Seleziona almeno una zona."
     },
     "abort": {
-      "single_instance_allowed": "È consentita una sola istanza."
+      "single_instance_allowed": "È consentita una sola istanza.",
+      "celsius_only": "Chronothermostat funziona solo con temperature in °C. Passa Home Assistant al sistema metrico per usarlo."
     }
   },
   "options": {

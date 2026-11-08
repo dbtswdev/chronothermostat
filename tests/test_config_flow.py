@@ -3,6 +3,7 @@
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 from custom_components.chronothermostat.const import DOMAIN, Scenario
 
@@ -99,3 +100,14 @@ async def test_removed_zone_keeps_its_program_when_added_back(
     data = hass.data[DOMAIN][entry.entry_id]
     assert data.store.get_week("climate.zone_b", Scenario.WORK)["sat"] == custom_day
     assert er.async_get(hass).async_get("sensor.chronothermostat_zone_b_status")
+
+
+async def test_user_flow_aborts_on_non_celsius_systems(hass, two_climates):
+    hass.config.units = US_CUSTOMARY_SYSTEM
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "celsius_only"

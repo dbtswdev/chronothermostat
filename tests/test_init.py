@@ -1,10 +1,12 @@
 """Tests for entry setup and unload."""
 
 from datetime import datetime
+import logging
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 from custom_components.chronothermostat import ChronoData
 from custom_components.chronothermostat.const import DOMAIN
@@ -56,3 +58,27 @@ async def test_failed_platform_setup_stops_the_engine(
 
     assert temp_calls == []
     assert mode_calls == []
+
+
+async def test_setup_refuses_non_celsius_systems(
+    hass, config_entry, climate_calls, caplog
+):
+    temp_calls, mode_calls = climate_calls
+    hass.config.units = US_CUSTOMARY_SYSTEM
+
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert DOMAIN not in hass.data
+    assert temp_calls == []
+    assert mode_calls == []
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+        and record.name.startswith(f"custom_components.{DOMAIN}")
+    ] == [
+        "Chronothermostat works only with temperatures in °C; "
+        "switch Home Assistant to the metric unit system"
+    ]
