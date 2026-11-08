@@ -12,6 +12,7 @@ const EN = {
   continue: "Continue",
   save: "Save",
   copy_from: "Copy from…",
+  copy_from_hint: "Copy the saved program of:",
   discard: "Discard",
   confirm: "Confirm",
   cancel: "Cancel",
@@ -43,6 +44,8 @@ const EN = {
   status_zone_on_manual:
     "Turned on by hand with the heating off: stays at {temp} until you turn it off or change scenario.",
   status_unavailable: "Thermostat unavailable.",
+  config_entity: "Thermostat",
+  config_name: "Name (optional)",
 } as const;
 
 export type StringKey = keyof typeof EN;
@@ -59,6 +62,7 @@ const IT: Record<StringKey, string> = {
   continue: "Prosegui",
   save: "Salva",
   copy_from: "Copia da…",
+  copy_from_hint: "Copia il programma salvato di:",
   discard: "Scarta",
   confirm: "Conferma",
   cancel: "Annulla",
@@ -92,6 +96,8 @@ const IT: Record<StringKey, string> = {
   status_zone_on_manual:
     "Acceso a mano con impianto spento: resta a {temp} finché non lo spegni o cambi scenario.",
   status_unavailable: "Termostato non disponibile.",
+  config_entity: "Termostato",
+  config_name: "Nome (facoltativo)",
 };
 
 export const STRINGS: Record<Lang, Record<StringKey, string>> = { en: EN, it: IT };
