@@ -1,0 +1,9 @@
+docs/superpowers/
+.superpowers/
+dev-config/
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+frontend-src/node_modules/
+.DS_Store

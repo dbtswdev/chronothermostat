@@ -1,0 +1,14 @@
+{
+  "domain": "chronothermostat",
+  "name": "Chronothermostat",
+  "codeowners": ["@dbtswdev"],
+  "config_flow": true,
+  "dependencies": ["http", "websocket_api", "frontend", "lovelace"],
+  "documentation": "https://github.com/dbtswdev/chronothermostat",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/dbtswdev/chronothermostat/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
