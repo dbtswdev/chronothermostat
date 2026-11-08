@@ -80,6 +80,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the entry's stored programs when the integration is removed."""
+    await ProgramStore(hass, entry.entry_id).async_remove()
+
+
 def _pop_data(hass: HomeAssistant, entry: ConfigEntry) -> ChronoData:
     """Take the entry's runtime data out of hass.data."""
     data: ChronoData = hass.data[DOMAIN].pop(entry.entry_id)

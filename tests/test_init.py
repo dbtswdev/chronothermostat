@@ -1,4 +1,4 @@
-"""Tests for entry setup and unload."""
+"""Tests for entry setup, unload and removal."""
 
 from datetime import datetime
 import logging
@@ -82,3 +82,16 @@ async def test_setup_refuses_non_celsius_systems(
         "Chronothermostat works only with temperatures in °C; "
         "switch Home Assistant to the metric unit system"
     ]
+
+
+async def test_removing_the_entry_deletes_its_programs(
+    hass, hass_storage, setup_integration
+):
+    entry = setup_integration
+    key = f"chronothermostat.{entry.entry_id}"
+    assert key in hass_storage
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage

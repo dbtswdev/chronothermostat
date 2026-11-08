@@ -40,6 +40,10 @@ class ProgramStore:
         """Write the current data to disk immediately."""
         await self._store.async_save(self._data)
 
+    async def async_remove(self) -> None:
+        """Delete the stored file (the integration is being removed)."""
+        await self._store.async_remove()
+
     @property
     def scenario(self) -> Scenario:
         """Return the current house-wide scenario."""
