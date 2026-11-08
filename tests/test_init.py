@@ -6,7 +6,7 @@ from custom_components.chronothermostat import ChronoData
 from custom_components.chronothermostat.const import DOMAIN
 
 
-async def test_setup_and_unload(hass, config_entry, two_climates):
+async def test_setup_and_unload(hass, config_entry, two_climates, climate_calls):
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     assert config_entry.state is ConfigEntryState.LOADED
