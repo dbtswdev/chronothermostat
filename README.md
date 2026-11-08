@@ -91,7 +91,8 @@ and the mobile app keep working, and the rules around them are simple.
 
 ## Installation
 
-Requires Home Assistant 2026.9 or newer.
+Requires Home Assistant 2026.9 or newer, with temperatures in °C (metric unit system):
+on a system set to °F the integration cannot be added and does not start.
 
 ### HACS (custom repository)
 
@@ -122,8 +123,15 @@ zone back restores them.
 A zone's name is the friendly name of its `climate` entity; the editor card accepts
 an optional `name` to override it.
 
+When the integration is added, and every time it reloads (after **Configure**, for
+example), zones that are on in Work or Holiday are sent the value of the current
+quarter hour of their program at once. For new zones that is the default program:
+16 °C from 23:00 to 06:00 and 19 °C otherwise.
+
 Programs, the scenario and the return time are stored by the integration (in
 `.storage`), never in `configuration.yaml`. There is nothing to configure in YAML.
+Deleting the integration also deletes its programs: adding it again starts from the
+default program.
 
 Zones are switched on with HVAC mode `heat` and off with `off`.
 
@@ -135,8 +143,8 @@ the default). After installing or updating, reload the browser page. For dashboa
 in YAML mode see the [FAQ](#faq).
 
 All three cards can be added from the dashboard editor (search for
-"Chronothermostat"); the viewer and the editor have a visual editor for the zone and
-the optional name.
+"Chronothermostat") and have a visual editor: the zone for the viewer, the zone and
+the optional name for the editor, the optional name for the scenario card.
 
 A typical setup: an everyday view with the scenario card at the top and, for each
 zone, the standard `thermostat` card followed by the viewer card; a separate view
@@ -166,8 +174,10 @@ views:
 
 `custom:chronothermostat-scenario-card` — one per house. Four buttons, the active one
 highlighted (Away and Off in red), and a sentence saying what the house is doing.
-Work and Holiday apply at once; Away asks for the return date and time (15-minute
-steps, pre-filled with tomorrow at 19:00) and Off asks for confirmation.
+Work and Holiday apply at once; tapping the one already active does nothing, so zones
+switched off or forced by hand stay as they are. Away asks for the return date and
+time (rounded to the nearest quarter hour, pre-filled with tomorrow at 19:00) and Off
+asks for confirmation.
 
 <img src="docs/img/scenario-card.png" alt="Scenario card in the Away scenario" width="480">
 
@@ -213,9 +223,12 @@ entity: climate.office
 | Option | Required | Description |
 |---|---|---|
 | `entity` | yes | The zone's `climate` entity. |
-| `name` | no | Accepted, not displayed (the zone is the one of the thermostat card above). |
+| `name` | no | Accepted in YAML but not displayed (the zone is the one of the thermostat card above). |
 
-The viewer reads only the zone's status sensor and its `climate` entity.
+The viewer reads only the zone's status sensor and its `climate` entity. A short
+unavailable blip of the thermostat (some wall thermostats have one after every
+command) does not change the card: it says *Thermostat unavailable.* only when the
+zone stays unavailable for more than 5 seconds.
 
 ### Editor card
 
@@ -259,12 +272,12 @@ Switches the house-wide scenario.
 | Field | Required | Description |
 |---|---|---|
 | `scenario` | yes | `work`, `holiday`, `away` or `off`. |
-| `return_at` | for `away` | When the house returns to Work. Must be in the future and carry a timezone offset; ignored for the other scenarios. |
+| `return_at` | for `away` | When the house returns to Work. Must be in the future; ignored for the other scenarios. |
 
-`return_at` must be timezone-aware: write the offset explicitly
-(`2026-12-27T19:00:00+01:00`) or use a template such as
-`{{ now() + timedelta(days=2) }}`. Naive values such as `2026-12-27 19:00` and times in
-the past are rejected.
+A `return_at` without a timezone offset, such as `2026-12-27 19:00` (what the
+service's date and time picker sends), is read in Home Assistant's time zone. A value
+with an offset (`2026-12-27T19:00:00+01:00`) or from a template such as
+`{{ now() + timedelta(days=2) }}` is used as it is. Times in the past are rejected.
 
 ```yaml
 action: chronothermostat.set_scenario
@@ -360,6 +373,9 @@ missing. Attributes (the program ones are empty while the house is Away or Off):
 | `today` | Today's 96 program values. |
 | `return_at` | The return time of Away (ISO 8601), if any. |
 
+Of these attributes only `zone` and `program` are recorded in the history database;
+the others are derived from the program and left out to keep the database small.
+
 ## Logging
 
 Every command sent to a zone is logged at `info` level with its reason (`step`,
@@ -407,7 +423,8 @@ needs to be sent. Switching on a zone whose setpoint differs sends the program v
 (reason `zone_on`).
 
 **Why is my automation's `return_at` rejected?**
-It has no timezone offset or it is in the past. Use a template such as
+It is in the past. A time without offset is read in Home Assistant's time zone, which
+may differ from the one of your browser or device; use a template such as
 `{{ now() + timedelta(hours=36) }}` or write the offset explicitly.
 
 **Does it work for cooling?**
