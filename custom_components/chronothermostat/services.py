@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, WEEKDAYS, Scenario
 
@@ -72,7 +73,10 @@ async def _async_set_scenario(call: ServiceCall) -> None:
     data = get_chrono_data(call.hass)
     scenario = Scenario(call.data["scenario"])
     return_at = call.data.get("return_at")
-    if scenario is Scenario.AWAY and (return_at is None or return_at.tzinfo is None):
+    if return_at is not None and return_at.tzinfo is None:
+        # The service's own datetime selector sends local times without offset.
+        return_at = return_at.replace(tzinfo=dt_util.get_default_time_zone())
+    if scenario is Scenario.AWAY and return_at is None:
         raise _error("return_at_required")
     try:
         await data.engine.async_set_scenario(scenario, return_at, source="service")

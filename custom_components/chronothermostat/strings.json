@@ -74,7 +74,7 @@
         },
         "return_at": {
           "name": "Return at",
-          "description": "When the house returns to the schedule. Required, timezone-aware and in the future for away; ignored otherwise."
+          "description": "When the house returns to the schedule. Required and in the future for away (a time without offset is read in Home Assistant's time zone); ignored otherwise."
         }
       }
     },
@@ -158,7 +158,7 @@
       "message": "{zone} is not a configured zone."
     },
     "return_at_required": {
-      "message": "Away needs a timezone-aware return time in the future."
+      "message": "Away needs a return time in the future."
     },
     "invalid_program": {
       "message": "Invalid program: {error}"

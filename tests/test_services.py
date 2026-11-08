@@ -28,12 +28,26 @@ async def test_set_scenario_service_sets_away_with_return(hass, setup_at):
     assert data.engine.return_at == return_at
 
 
-async def test_set_scenario_service_rejects_naive_return_at(hass, setup_at):
+async def test_set_scenario_service_reads_naive_return_at_in_local_time(
+    hass, setup_at
+):
+    data = await setup_at(NOW)
+
+    # What the service's own datetime selector sends: no offset.
+    await _call(
+        hass, "set_scenario", {"scenario": "away", "return_at": "2026-11-12 18:00:00"}
+    )
+
+    assert data.engine.scenario is Scenario.AWAY
+    assert data.engine.return_at == datetime(2026, 11, 12, 18, 0, tzinfo=ROME)
+
+
+async def test_set_scenario_service_rejects_naive_past_return_at(hass, setup_at):
     data = await setup_at(NOW)
 
     with pytest.raises(ServiceValidationError) as err:
         await _call(
-            hass, "set_scenario", {"scenario": "away", "return_at": "2026-11-12 18:00:00"}
+            hass, "set_scenario", {"scenario": "away", "return_at": "2026-11-10 08:00:00"}
         )
 
     assert err.value.translation_key == "return_at_required"

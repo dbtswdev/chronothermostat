@@ -74,7 +74,7 @@
         },
         "return_at": {
           "name": "Rientro",
-          "description": "Quando la casa torna al programma. Obbligatorio, con fuso orario e nel futuro per fuori casa; altrimenti ignorato."
+          "description": "Quando la casa torna al programma. Obbligatorio e nel futuro per fuori casa (un orario senza fuso orario è letto nel fuso di Home Assistant); altrimenti ignorato."
         }
       }
     },
@@ -158,7 +158,7 @@
       "message": "{zone} non è una zona configurata."
     },
     "return_at_required": {
-      "message": "Fuori casa richiede un orario di rientro futuro con fuso orario."
+      "message": "Fuori casa richiede un orario di rientro nel futuro."
     },
     "invalid_program": {
       "message": "Programma non valido: {error}"

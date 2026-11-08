@@ -68,7 +68,7 @@ export function copyDay(
 
 const pad = (n: number): string => (n < 10 ? `0${n}` : String(n));
 
-/** ISO 8601 in local time with explicit UTC offset (the service rejects naive datetimes). */
+/** ISO 8601 in local time with an explicit UTC offset, so the browser's time zone is the one used. */
 export function toOffsetIso(d: Date): string {
   const off = -d.getTimezoneOffset();
   const sign = off >= 0 ? "+" : "-";
