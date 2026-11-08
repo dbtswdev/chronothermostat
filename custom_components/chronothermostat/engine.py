@@ -624,7 +624,8 @@ class Engine:
 
         Availability is checked right before the call: Home Assistant skips
         unavailable entities without raising, so a call made during the Wall
-        Display's blip would be lost silently.
+        Display's blip would be lost silently. Any error of one zone's call
+        leaves the part undelivered, so the other zones are still served.
         """
         if self.zone_state(zone_id).hvac_mode is None:
             _LOGGER.debug(
@@ -651,6 +652,11 @@ class Engine:
         except HomeAssistantError as err:
             _LOGGER.warning(
                 "%s: set %s %s failed (%s): %s", zone_id, attribute, value, reason, err
+            )
+            return False
+        except Exception:
+            _LOGGER.exception(
+                "%s: set %s %s failed (%s)", zone_id, attribute, value, reason
             )
             return False
         _LOGGER.info("%s: set %s %s (%s)", zone_id, attribute, value, reason)

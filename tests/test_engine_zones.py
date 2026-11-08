@@ -719,3 +719,64 @@ async def test_hung_climate_call_times_out_and_releases_lock(
         (ZONE_B, 20.0),
     ]
     assert data.engine._pending == {}
+
+
+def failing_climate(hass, sent: list, failing_zone: str, error: Exception) -> None:
+    """Make the climate services raise for one zone and record the other calls."""
+
+    async def climate_service(call):
+        if call.data["entity_id"] == failing_zone:
+            raise error
+        sent.append(call_value(call))
+
+    register_climate_services(hass, climate_service)
+
+
+async def test_unexpected_error_in_scenario_change_keeps_serving_other_zones(
+    hass, hass_storage, setup_at, caplog
+):
+    data = await setup_at(at(10, 8))
+    sent = []
+    failing_climate(hass, sent, ZONE_A, ConnectionError("link down"))
+
+    await data.engine.async_set_scenario(Scenario.OFF)
+
+    assert sent == [(ZONE_B, "off")]
+    assert data.engine.scenario is Scenario.OFF
+    assert data.engine._pending == {ZONE_A: PendingCommand("off", None)}
+    assert "climate.zone_a: set hvac_mode off failed (scenario off)" in caplog.text
+
+
+async def test_unexpected_error_on_quarter_keeps_serving_other_zones(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 6, 59, 59))
+    for zone_id in (ZONE_A, ZONE_B):
+        data.store.set_day(
+            zone_id, Scenario.WORK, "tue", step_day(15.0, 19.0, SLOT_0700)
+        )
+    updates = []
+    async_dispatcher_connect(
+        hass,
+        SIGNAL_UPDATED.format(entry_id=data.engine.entry_id),
+        callback(lambda: updates.append(None)),
+    )
+    sent = []
+    failing_climate(hass, sent, ZONE_A, ConnectionError("link down"))
+
+    await time_travel(at(10, 7))
+
+    assert sent == [(ZONE_B, 19.0)]
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
+    assert len(updates) == 1
+
+
+async def test_unexpected_error_at_startup_keeps_serving_other_zones(hass, setup_at):
+    sent = []
+    failing_climate(hass, sent, ZONE_A, ConnectionError("link down"))
+
+    data = await setup_at(at(10, 8))
+
+    assert sent == [(ZONE_B, 19.0)]
+    assert data.engine._pending == {ZONE_A: PendingCommand(None, 19.0)}
+
