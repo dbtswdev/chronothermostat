@@ -68,9 +68,56 @@ describe("scenario card", () => {
     chip(el, "work").click();
     await flush(el);
     expect(hass.callService).toHaveBeenCalledWith("chronothermostat", "set_scenario", { scenario: "work" });
+    hass.states = { [SELECT]: st("work"), [RETURN_AT]: st("unknown") };
+    el.hass = { ...hass } as never;
+    await flush(el);
     chip(el, "holiday").click();
     await flush(el);
     expect(hass.callService).toHaveBeenLastCalledWith("chronothermostat", "set_scenario", { scenario: "holiday" });
+  });
+
+  it("tapping the active Work or Holiday chip does nothing", async () => {
+    // Re-applying would switch hand-switched-off zones back on and drop forced setpoints.
+    for (const scenario of ["work", "holiday"]) {
+      const { el, hass } = await mount(scenario);
+      chip(el, scenario).click();
+      await flush(el);
+      expect(hass.callService).not.toHaveBeenCalled();
+      chip(el, "off").click();
+      await flush(el);
+      chip(el, scenario).click(); // closes the Off panel, still without a call
+      await flush(el);
+      expect(root(el).querySelector(".panel")).toBeNull();
+      expect(hass.callService).not.toHaveBeenCalled();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("rounds the return time to the nearest quarter hour", async () => {
+    const { el, hass } = await mount("work");
+    chip(el, "away").click();
+    await flush(el);
+    // Native pickers ignore step="900": 06:37 today rounds to 06:30, which is not in the future.
+    setInput(el, 'input[type="date"]', "2026-11-09");
+    setInput(el, 'input[type="time"]', "06:37");
+    confirmBtn(el).click();
+    await flush(el);
+    expect(root(el).querySelector(".error")?.textContent?.trim()).toBe("Set the return day and time");
+    expect(hass.callService).not.toHaveBeenCalled();
+
+    setInput(el, 'input[type="date"]', "2026-11-12");
+    setInput(el, 'input[type="time"]', "19:07");
+    confirmBtn(el).click();
+    await flush(el);
+    expect(Date.parse(hass.callService.mock.calls[0][2].return_at)).toBe(new Date(2026, 10, 12, 19, 0).getTime());
+
+    chip(el, "away").click();
+    await flush(el);
+    setInput(el, 'input[type="date"]', "2026-11-12");
+    setInput(el, 'input[type="time"]', "23:53");
+    confirmBtn(el).click();
+    await flush(el);
+    expect(Date.parse(hass.callService.mock.calls[1][2].return_at)).toBe(new Date(2026, 10, 13, 0, 0).getTime());
   });
 
   it("test_tapping_off_requires_confirm", async () => {

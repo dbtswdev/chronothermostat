@@ -24,6 +24,13 @@ function defaultReturn(now: Date): { date: string; time: string } {
   return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: "19:00" };
 }
 
+/** The instant on the nearest quarter hour of the local clock (the return is on a 15-minute grid). */
+function roundToQuarter(d: Date): Date {
+  const rounded = new Date(d.getTime());
+  rounded.setMinutes(Math.round(rounded.getMinutes() / 15) * 15, 0, 0);
+  return rounded;
+}
+
 /** Local instant of a date input ("YYYY-MM-DD") and a time input ("HH:MM"), or undefined. */
 function parseLocal(date: string, time: string): Date | undefined {
   const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
@@ -110,6 +117,11 @@ export class ChronothermostatScenarioCard extends LitElement {
     );
   }
 
+  private _active(): Scenario | undefined {
+    const state = this._current().select?.state;
+    return isScenario(state) ? state : undefined;
+  }
+
   private _current(): { select?: HassState; returnAt?: HassState; lang: Lang } {
     const states = this.hass?.states ?? {};
     const { scenario_entity_id: selectId, return_at_entity_id: returnId } = this._info ?? {};
@@ -130,6 +142,9 @@ export class ChronothermostatScenarioCard extends LitElement {
       return;
     }
     this._panel = undefined;
+    // The active program is not applied again: that would switch zones turned off by hand back
+    // on and drop forced setpoints.
+    if (key === this._active()) return;
     void this._apply(key);
   }
 
@@ -151,7 +166,9 @@ export class ChronothermostatScenarioCard extends LitElement {
   private _confirmAway(): void {
     const field = (sel: string): string =>
       (this.renderRoot.querySelector(sel) as HTMLInputElement | null)?.value ?? "";
-    const when = parseLocal(field('input[type="date"]'), field('input[type="time"]'));
+    // Native pickers ignore step="900", so the chosen time is put on the quarter hour here.
+    const picked = parseLocal(field('input[type="date"]'), field('input[type="time"]'));
+    const when = picked && roundToQuarter(picked);
     if (!when || when.getTime() <= Date.now()) {
       this._message = t(langOf(this.hass), "return_required");
       return;
@@ -163,8 +180,8 @@ export class ChronothermostatScenarioCard extends LitElement {
 
   protected render(): TemplateResult {
     const lang = langOf(this.hass);
-    const { select, returnAt } = this._current();
-    const active = isScenario(select?.state) ? select?.state : undefined;
+    const { returnAt } = this._current();
+    const active = this._active();
     const label = this._config.name || t(lang, "house_scenario");
     const failure: Failure | undefined = this._infoFailed ? "error_load" : undefined;
 
