@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -16,14 +17,40 @@ from .engine import Engine
 from .status import ZoneStatusKey
 
 
+def status_unique_id(entry_id: str, zone_id: str) -> str:
+    """Return the unique id of a zone's status sensor."""
+    return f"{entry_id}_{zone_id}_status"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add one status sensor per zone."""
+    """Add one status sensor per zone, after removing those of removed zones."""
     engine = hass.data[DOMAIN][entry.entry_id].engine
+    _remove_stale_sensors(hass, entry.entry_id, engine.zone_ids)
     async_add_entities(ZoneStatusSensor(engine, zone_id) for zone_id in engine.zone_ids)
+
+
+@callback
+def _remove_stale_sensors(
+    hass: HomeAssistant, entry_id: str, zone_ids: list[str]
+) -> None:
+    """Drop registry entries of status sensors whose zone is no longer configured.
+
+    Only the registry entry goes; the zone's stored programs are kept, so adding
+    the zone back restores its program.
+    """
+    registry = er.async_get(hass)
+    current = {status_unique_id(entry_id, zone_id) for zone_id in zone_ids}
+    for entity in er.async_entries_for_config_entry(registry, entry_id):
+        if (
+            entity.domain == "sensor"
+            and entity.unique_id.endswith("_status")
+            and entity.unique_id not in current
+        ):
+            registry.async_remove(entity.entity_id)
 
 
 class ZoneStatusSensor(ChronoEntity, SensorEntity):
@@ -37,7 +64,7 @@ class ZoneStatusSensor(ChronoEntity, SensorEntity):
         """Set ids and the zone name placeholder."""
         super().__init__(engine)
         self._zone_id = zone_id
-        self._attr_unique_id = f"{engine.entry_id}_{zone_id}_status"
+        self._attr_unique_id = status_unique_id(engine.entry_id, zone_id)
         self._attr_translation_placeholders = {"zone": engine.zone_name(zone_id)}
 
     async def async_added_to_hass(self) -> None:

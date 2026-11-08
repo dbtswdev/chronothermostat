@@ -116,7 +116,9 @@ install from a public repository or a public fork.
 2. Select the `climate` entities to manage as zones and submit.
 
 The integration can be added once. To add or remove zones later, open the
-integration and choose **Configure**: the integration reloads with the new list.
+integration and choose **Configure**: the integration reloads with the new list. The
+status sensor of a removed zone is deleted, but its programs are kept, so adding the
+zone back restores them.
 A zone's name is the friendly name of its `climate` entity; the editor card accepts
 an optional `name` to override it.
 
