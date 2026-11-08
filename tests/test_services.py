@@ -121,6 +121,39 @@ async def test_set_program_service_rejects_non_numbers(hass, setup_at):
     assert data.store.get_week(ZONE, Scenario.WORK) == before
 
 
+async def test_set_program_service_rejects_out_of_range_values(hass, setup_at):
+    data = await setup_at(NOW)
+    before = data.store.get_week(ZONE, Scenario.WORK)
+
+    with pytest.raises(ServiceValidationError) as err:
+        await _call(
+            hass,
+            "set_program",
+            {
+                "zone": ZONE,
+                "program": "work",
+                "weekday": "mon",
+                "values": [18.0] * 95 + [99],
+            },
+        )
+
+    assert err.value.translation_key == "invalid_program"
+    assert data.store.get_week(ZONE, Scenario.WORK) == before
+
+
+async def test_set_program_service_accepts_value_at_max(hass, setup_at):
+    data = await setup_at(NOW)
+    values = [18.0] * 95 + [30.0]
+
+    await _call(
+        hass,
+        "set_program",
+        {"zone": ZONE, "program": "work", "weekday": "mon", "values": values},
+    )
+
+    assert data.store.get_week(ZONE, Scenario.WORK)["mon"] == values
+
+
 async def test_set_program_service_rejects_unknown_zone(hass, setup_at):
     data = await setup_at(NOW)
     before = data.store.get_week(ZONE, Scenario.WORK)

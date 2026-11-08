@@ -288,8 +288,8 @@ Replaces one day of a zone's program.
 | `weekday` | yes | `mon`, `tue`, `wed`, `thu`, `fri`, `sat` or `sun`. |
 | `values` | yes | Exactly 96 numbers, one per quarter hour starting at 00:00. |
 
-Values are rounded to 0.5 °C and limited to the thermostat's `min_temp`/`max_temp`.
-A list with another length or with non-numeric values is rejected and the stored
+Values are rounded to 0.5 °C. A list with another length, with non-numeric values or
+with values outside the thermostat's `min_temp`/`max_temp` is rejected and the stored
 program is left unchanged. Saving today's day of the active program applies the new
 current value at once (see [Other details](#other-details)).
 

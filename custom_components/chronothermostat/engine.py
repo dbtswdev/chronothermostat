@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
@@ -116,6 +116,22 @@ def _check_weekday(weekday: str) -> None:
         raise ValueError(f"Invalid weekday {weekday!r}")
 
 
+def _check_range(values: Any, min_temp: float, max_temp: float) -> None:
+    """Raise ValueError for a number outside the zone's setpoint range.
+
+    Values that are not numbers are left to normalize_day, which rejects them.
+    """
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        return
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not min_temp <= value <= max_temp:
+            raise ValueError(
+                f"Setpoint {value!r} is outside the range {min_temp} to {max_temp}"
+            )
+
+
 class Engine:
     """Drives the zones from their programs."""
 
@@ -215,8 +231,9 @@ class Engine:
         """Save one program day and apply it if it changes the current value.
 
         Raises ValueError for a zone that is not configured, a scenario
-        without a program, an invalid weekday or invalid values; storage is
-        left untouched and nothing is sent.
+        without a program, an invalid weekday or invalid values (including a
+        value outside the zone's min/max); storage is left untouched and
+        nothing is sent.
         """
         async with self._lock:
             await self._async_save_day(zone_id, scenario, weekday, values)
@@ -494,7 +511,9 @@ class Engine:
         """
         scenario = self._program_scenario(zone_id, scenario)
         _check_weekday(weekday)
-        day = normalize_day(values, *self.min_max(zone_id))
+        min_temp, max_temp = self.min_max(zone_id)
+        _check_range(values, min_temp, max_temp)
+        day = normalize_day(values, min_temp, max_temp)
         old_week = self.store.get_week(zone_id, scenario)
         self.store.set_day(zone_id, scenario, weekday, day)
         await self.store.async_save()

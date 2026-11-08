@@ -423,6 +423,39 @@ async def test_save_rejects_bad_values_without_storing(
     assert mode_calls == []
 
 
+@pytest.mark.parametrize(
+    "values",
+    [[19.0] * 95 + [99.0], [19.0] * 95 + [4.5], [30.5] * 96],
+    ids=["above_max", "below_min", "all_above_max"],
+)
+async def test_save_rejects_out_of_range_values_without_storing(
+    hass, hass_storage, setup_at, climate_calls, values
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 8))
+    entry_id = data.engine.entry_id
+    week_before = data.store.get_week(ZONE_A, Scenario.WORK)
+    stored_before = stored_day(hass_storage, entry_id, ZONE_A, "work", "tue")
+    temp_calls.clear()
+
+    with pytest.raises(ValueError, match="range"):
+        await data.engine.async_save_day(ZONE_A, Scenario.WORK, "tue", values)
+
+    assert data.store.get_week(ZONE_A, Scenario.WORK) == week_before
+    assert stored_day(hass_storage, entry_id, ZONE_A, "work", "tue") == stored_before
+    assert temp_calls == []
+    assert mode_calls == []
+
+
+async def test_save_accepts_values_at_the_limits(hass, setup_at, climate_calls):
+    data = await setup_at(at(10, 8))
+    day = [5.0] * 48 + [30.0] * 48
+
+    await data.engine.async_save_day(ZONE_A, Scenario.WORK, "wed", day)
+
+    assert data.store.get_week(ZONE_A, Scenario.WORK)["wed"] == day
+
+
 async def test_save_rejects_unknown_zone_program_or_weekday(
     hass, setup_at, climate_calls
 ):
