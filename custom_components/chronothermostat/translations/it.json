@@ -29,5 +29,38 @@
     "error": {
       "no_zones": "Seleziona almeno una zona."
     }
+  },
+  "entity": {
+    "select": {
+      "scenario": {
+        "name": "Scenario",
+        "state": {
+          "work": "Lavoro",
+          "holiday": "Ferie",
+          "away": "Fuori casa",
+          "off": "Spento"
+        }
+      }
+    },
+    "datetime": {
+      "return_at": {
+        "name": "Rientro"
+      }
+    },
+    "sensor": {
+      "zone_status": {
+        "name": "Stato {zone}",
+        "state": {
+          "schedule": "Programma",
+          "forced": "Forzato",
+          "zone_off": "Spento da te",
+          "zone_on_manual": "Acceso a mano",
+          "away": "Fuori casa",
+          "away_no_return": "Fuori casa senza rientro",
+          "off": "Impianto spento",
+          "unavailable": "Non disponibile"
+        }
+      }
+    }
   }
 }

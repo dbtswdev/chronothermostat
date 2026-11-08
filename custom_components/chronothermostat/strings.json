@@ -29,5 +29,38 @@
     "error": {
       "no_zones": "Select at least one zone."
     }
+  },
+  "entity": {
+    "select": {
+      "scenario": {
+        "name": "Scenario",
+        "state": {
+          "work": "Work",
+          "holiday": "Holiday",
+          "away": "Away",
+          "off": "Off"
+        }
+      }
+    },
+    "datetime": {
+      "return_at": {
+        "name": "Return at"
+      }
+    },
+    "sensor": {
+      "zone_status": {
+        "name": "{zone} status",
+        "state": {
+          "schedule": "Schedule",
+          "forced": "Forced",
+          "zone_off": "Switched off by you",
+          "zone_on_manual": "Switched on by hand",
+          "away": "Away",
+          "away_no_return": "Away without return",
+          "off": "System off",
+          "unavailable": "Unavailable"
+        }
+      }
+    }
   }
 }

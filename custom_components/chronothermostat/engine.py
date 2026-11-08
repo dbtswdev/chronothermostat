@@ -418,6 +418,7 @@ class Engine:
             for zone_id in self.zone_ids:
                 if zone_id not in stepped:
                     await self._async_retry(zone_id)
+        self._dispatch()
 
     async def _async_zone_event(
         self, zone_id: str, *, turned_on: bool, became_available: bool

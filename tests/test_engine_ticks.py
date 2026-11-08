@@ -112,3 +112,19 @@ async def test_midnight_step_sends_new_day_value(setup_at, time_travel, climate_
 
     assert temperatures(temp_calls) == [(ZONE_A, 18.0)]
     assert mode_calls == []
+
+
+async def test_quarter_tick_dispatches_update(hass, setup_at, time_travel):
+    from homeassistant.helpers.dispatcher import async_dispatcher_connect
+
+    from custom_components.chronothermostat.const import SIGNAL_UPDATED
+
+    data = await setup_at(at(10, 6, 59, 59))
+    calls = []
+    async_dispatcher_connect(
+        hass, SIGNAL_UPDATED.format(entry_id=data.engine.entry_id), lambda: calls.append(1)
+    )
+
+    await time_travel(at(10, 7))
+
+    assert calls
