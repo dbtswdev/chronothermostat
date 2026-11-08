@@ -1,1 +1,1 @@
-console.info("chronothermostat cards placeholder");
+/*! chronothermostat-cards v0.1.0 */
