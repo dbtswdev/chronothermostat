@@ -128,7 +128,7 @@
     "scenario": {
       "options": {
         "work": "Lavoro",
-        "holiday": "Festivo",
+        "holiday": "Ferie",
         "away": "Fuori casa",
         "off": "Spento"
       }
@@ -136,7 +136,7 @@
     "program": {
       "options": {
         "work": "Lavoro",
-        "holiday": "Festivo"
+        "holiday": "Ferie"
       }
     },
     "weekday": {
