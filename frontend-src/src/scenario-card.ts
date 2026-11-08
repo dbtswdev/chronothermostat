@@ -123,6 +123,7 @@ export class ChronothermostatScenarioCard extends LitElement {
   // ---- actions -------------------------------------------------------------------------------
 
   private _tap(key: Scenario): void {
+    if (this._busy) return;
     this._message = undefined;
     if (key === "away" || key === "off") {
       this._panel = this._panel === key ? undefined : key;
@@ -175,31 +176,32 @@ export class ChronothermostatScenarioCard extends LitElement {
             class="chip ${key} ${active === key ? "active" : ""}"
             data-scenario=${key}
             aria-pressed=${active === key ? "true" : "false"}
+            ?disabled=${this._busy}
             @click=${() => this._tap(key)}
           >${t(lang, key)}</button>`,
         )}
       </div>
       ${this._panel ? this._renderPanel(this._panel, lang) : nothing}
+      ${this._message ? html`<div class="error">${this._message}</div>` : nothing}
       ${failure ? html`<div class="error">${t(lang, failure)}</div>` : nothing}
       ${!failure && active ? html`<div class="sentence">${this._sentence(active, returnAt, lang)}</div>` : nothing}
     </ha-card>`;
   }
 
   private _renderPanel(kind: "away" | "off", lang: Lang): TemplateResult {
-    const message = this._message ? html`<div class="error">${this._message}</div>` : nothing;
     const buttons = html`<div class="buttons">
       <button class="action confirm" ?disabled=${this._busy}
         @click=${() => (kind === "off" ? void this._apply("off") : this._confirmAway())}>${t(lang, "confirm")}</button>
       <button class="action cancel" @click=${() => { this._panel = undefined; this._message = undefined; }}>${t(lang, "cancel")}</button>
     </div>`;
-    if (kind === "off") return html`<div class="panel">${buttons}${message}</div>`;
+    if (kind === "off") return html`<div class="panel">${buttons}</div>`;
     const def = defaultReturn(new Date());
     return html`<div class="panel">
       <div class="fields">
         <label>${t(lang, "return_date")}<input type="date" .value=${def.date} /></label>
         <label>${t(lang, "return_time")}<input type="time" step="900" .value=${def.time} /></label>
       </div>
-      ${buttons}${message}
+      ${buttons}
     </div>`;
   }
 
@@ -251,6 +253,10 @@ export class ChronothermostatScenarioCard extends LitElement {
       padding: 0 4px;
       cursor: pointer;
       overflow-wrap: anywhere;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
     }
     .chip.active {
       background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);

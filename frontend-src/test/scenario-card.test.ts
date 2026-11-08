@@ -155,6 +155,46 @@ describe("scenario card", () => {
     expect(root(el).querySelector(".panel")).not.toBeNull();
   });
 
+  it("shows a Work service failure inline outside the panel", async () => {
+    const { el, hass } = await mount("holiday");
+    hass.callService.mockRejectedValueOnce(new Error("Backend down"));
+    chip(el, "work").click();
+    await flush(el);
+    expect(root(el).querySelector(".error")?.textContent?.trim()).toBe("Backend down");
+    expect(root(el).querySelector(".panel")).toBeNull();
+    chip(el, "work").click();
+    await flush(el);
+    expect(root(el).querySelector(".error")).toBeNull();
+  });
+
+  it("double tap on Confirm makes exactly one call", async () => {
+    const { el, hass } = await mount("work");
+    chip(el, "off").click();
+    await flush(el);
+    const btn = confirmBtn(el);
+    btn.click();
+    btn.click();
+    await flush(el);
+    expect(hass.callService).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores taps and disables the chips while a call is pending", async () => {
+    const { el, hass } = await mount("holiday");
+    let release: () => void = () => undefined;
+    hass.callService.mockReturnValueOnce(new Promise<void>((r) => { release = r; }));
+    chip(el, "work").click();
+    await flush(el);
+    expect(chip(el, "holiday").disabled).toBe(true);
+    chip(el, "holiday").click();
+    chip(el, "off").click();
+    await flush(el);
+    expect(hass.callService).toHaveBeenCalledTimes(1);
+    expect(root(el).querySelector(".panel")).toBeNull();
+    release();
+    await flush(el);
+    expect(chip(el, "holiday").disabled).toBe(false);
+  });
+
   it("cancel on Off closes without a call", async () => {
     const { el, hass } = await mount("work");
     chip(el, "off").click();

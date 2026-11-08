@@ -296,29 +296,31 @@ var at=globalThis,dt=at.ShadowRoot&&(at.ShadyCSS===void 0||at.ShadyCSS.nativeSha
       grid-template-columns: repeat(3, 1fr);
       gap: 4px;
     }
-  `;var It="chronothermostat-scenario-card",Re=["work","holiday","away","off"],ss=3e4,ke=i=>i<10?`0${i}`:String(i),rs=i=>Re.includes(i);function is(i){let e=new Date(i.getFullYear(),i.getMonth(),i.getDate()+1,19,0);return{date:`${e.getFullYear()}-${ke(e.getMonth()+1)}-${ke(e.getDate())}`,time:"19:00"}}function ns(i,e){let t=/^(\d{4})-(\d{2})-(\d{2})$/.exec(i),s=/^(\d{2}):(\d{2})/.exec(e);if(!t||!s)return;let r=new Date(+t[1],+t[2]-1,+t[3],+s[1],+s[2]);return isNaN(r.getTime())?void 0:r}var B=class extends v{constructor(){super();this._infoPending=!1;this._infoTriedAt=0;this._config={},this._infoFailed=!1,this._busy=!1}static getStubConfig(){return{}}setConfig(t){this._config={...t!=null?t:{}}}getCardSize(){return 3}shouldUpdate(t){t.has("hass")&&this._ensureInfo();let s=this._current(),r=this._seen,n=!!r&&r.select===s.select&&r.returnAt===s.returnAt&&r.lang===s.lang;return this._seen=s,t.size===1&&t.has("hass")?!n:!0}_ensureInfo(){!this.hass||this._infoPending||this._info&&this._info.scenario_entity_id||this._infoTriedAt&&Date.now()-this._infoTriedAt<ss||(this._infoTriedAt=Date.now(),this._infoPending=!0,ht(this.hass).then(t=>{this._infoPending=!1,this._info=t,this._infoFailed=!(t!=null&&t.scenario_entity_id)},()=>{this._infoPending=!1,this._infoFailed=!0}))}_current(){var n,o,d;let t=(o=(n=this.hass)==null?void 0:n.states)!=null?o:{},{scenario_entity_id:s,return_at_entity_id:r}=(d=this._info)!=null?d:{};return{select:s?t[s]:void 0,returnAt:r?t[r]:void 0,lang:b(this.hass)}}_tap(t){if(this._message=void 0,t==="away"||t==="off"){this._panel=this._panel===t?void 0:t;return}this._panel=void 0,this._apply(t)}async _apply(t,s){if(!(!this.hass||this._busy)){this._busy=!0,this._message=void 0;try{await fe(this.hass,t,s),(t==="away"||t==="off")&&(this._panel=void 0)}catch(r){let n=r instanceof Error?r.message:"";this._message=n||u(b(this.hass),"error_save")}finally{this._busy=!1}}}_confirmAway(){let t=r=>{var n,o;return(o=(n=this.renderRoot.querySelector(r))==null?void 0:n.value)!=null?o:""},s=ns(t('input[type="date"]'),t('input[type="time"]'));if(!s||s.getTime()<=Date.now()){this._message=u(b(this.hass),"return_required");return}this._apply("away",s)}render(){let t=b(this.hass),{select:s,returnAt:r}=this._current(),n=rs(s==null?void 0:s.state)?s==null?void 0:s.state:void 0,o=this._config.name||u(t,"house_scenario"),d=this._infoFailed?"error_load":void 0;return m`<ha-card>
+  `;var It="chronothermostat-scenario-card",Re=["work","holiday","away","off"],ss=3e4,ke=i=>i<10?`0${i}`:String(i),rs=i=>Re.includes(i);function is(i){let e=new Date(i.getFullYear(),i.getMonth(),i.getDate()+1,19,0);return{date:`${e.getFullYear()}-${ke(e.getMonth()+1)}-${ke(e.getDate())}`,time:"19:00"}}function ns(i,e){let t=/^(\d{4})-(\d{2})-(\d{2})$/.exec(i),s=/^(\d{2}):(\d{2})/.exec(e);if(!t||!s)return;let r=new Date(+t[1],+t[2]-1,+t[3],+s[1],+s[2]);return isNaN(r.getTime())?void 0:r}var B=class extends v{constructor(){super();this._infoPending=!1;this._infoTriedAt=0;this._config={},this._infoFailed=!1,this._busy=!1}static getStubConfig(){return{}}setConfig(t){this._config={...t!=null?t:{}}}getCardSize(){return 3}shouldUpdate(t){t.has("hass")&&this._ensureInfo();let s=this._current(),r=this._seen,n=!!r&&r.select===s.select&&r.returnAt===s.returnAt&&r.lang===s.lang;return this._seen=s,t.size===1&&t.has("hass")?!n:!0}_ensureInfo(){!this.hass||this._infoPending||this._info&&this._info.scenario_entity_id||this._infoTriedAt&&Date.now()-this._infoTriedAt<ss||(this._infoTriedAt=Date.now(),this._infoPending=!0,ht(this.hass).then(t=>{this._infoPending=!1,this._info=t,this._infoFailed=!(t!=null&&t.scenario_entity_id)},()=>{this._infoPending=!1,this._infoFailed=!0}))}_current(){var n,o,d;let t=(o=(n=this.hass)==null?void 0:n.states)!=null?o:{},{scenario_entity_id:s,return_at_entity_id:r}=(d=this._info)!=null?d:{};return{select:s?t[s]:void 0,returnAt:r?t[r]:void 0,lang:b(this.hass)}}_tap(t){if(!this._busy){if(this._message=void 0,t==="away"||t==="off"){this._panel=this._panel===t?void 0:t;return}this._panel=void 0,this._apply(t)}}async _apply(t,s){if(!(!this.hass||this._busy)){this._busy=!0,this._message=void 0;try{await fe(this.hass,t,s),(t==="away"||t==="off")&&(this._panel=void 0)}catch(r){let n=r instanceof Error?r.message:"";this._message=n||u(b(this.hass),"error_save")}finally{this._busy=!1}}}_confirmAway(){let t=r=>{var n,o;return(o=(n=this.renderRoot.querySelector(r))==null?void 0:n.value)!=null?o:""},s=ns(t('input[type="date"]'),t('input[type="time"]'));if(!s||s.getTime()<=Date.now()){this._message=u(b(this.hass),"return_required");return}this._apply("away",s)}render(){let t=b(this.hass),{select:s,returnAt:r}=this._current(),n=rs(s==null?void 0:s.state)?s==null?void 0:s.state:void 0,o=this._config.name||u(t,"house_scenario"),d=this._infoFailed?"error_load":void 0;return m`<ha-card>
       <div class="label">${o}</div>
       <div class="chips">
         ${Re.map(a=>m`<button
             class="chip ${a} ${n===a?"active":""}"
             data-scenario=${a}
             aria-pressed=${n===a?"true":"false"}
+            ?disabled=${this._busy}
             @click=${()=>this._tap(a)}
           >${u(t,a)}</button>`)}
       </div>
       ${this._panel?this._renderPanel(this._panel,t):f}
+      ${this._message?m`<div class="error">${this._message}</div>`:f}
       ${d?m`<div class="error">${u(t,d)}</div>`:f}
       ${!d&&n?m`<div class="sentence">${this._sentence(n,r,t)}</div>`:f}
-    </ha-card>`}_renderPanel(t,s){let r=this._message?m`<div class="error">${this._message}</div>`:f,n=m`<div class="buttons">
+    </ha-card>`}_renderPanel(t,s){let r=m`<div class="buttons">
       <button class="action confirm" ?disabled=${this._busy}
         @click=${()=>t==="off"?void this._apply("off"):this._confirmAway()}>${u(s,"confirm")}</button>
       <button class="action cancel" @click=${()=>{this._panel=void 0,this._message=void 0}}>${u(s,"cancel")}</button>
-    </div>`;if(t==="off")return m`<div class="panel">${n}${r}</div>`;let o=is(new Date);return m`<div class="panel">
+    </div>`;if(t==="off")return m`<div class="panel">${r}</div>`;let n=is(new Date);return m`<div class="panel">
       <div class="fields">
-        <label>${u(s,"return_date")}<input type="date" .value=${o.date} /></label>
-        <label>${u(s,"return_time")}<input type="time" step="900" .value=${o.time} /></label>
+        <label>${u(s,"return_date")}<input type="date" .value=${n.date} /></label>
+        <label>${u(s,"return_time")}<input type="time" step="900" .value=${n.time} /></label>
       </div>
-      ${n}${r}
+      ${r}
     </div>`}_sentence(t,s,r){var n;switch(t){case"work":return u(r,"house_work");case"holiday":return u(r,"house_holiday");case"off":return u(r,"house_off");default:{let o=new Date((n=s==null?void 0:s.state)!=null?n:"");return isNaN(o.getTime())||o.getTime()<=Date.now()?u(r,"house_away_no_return"):u(r,"house_away",{when:_t(o,r)})}}}};B.properties={hass:{attribute:!1},_config:{state:!0},_info:{state:!0},_infoFailed:{state:!0},_panel:{state:!0},_message:{state:!0},_busy:{state:!0}},B.styles=R`
     :host {
       display: block;
@@ -351,6 +353,10 @@ var at=globalThis,dt=at.ShadowRoot&&(at.ShadyCSS===void 0||at.ShadyCSS.nativeSha
       padding: 0 4px;
       cursor: pointer;
       overflow-wrap: anywhere;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
     }
     .chip.active {
       background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
