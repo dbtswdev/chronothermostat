@@ -143,8 +143,9 @@ the default). After installing or updating, reload the browser page. For dashboa
 in YAML mode see the [FAQ](#faq).
 
 All three cards can be added from the dashboard editor (search for
-"Chronothermostat") and have a visual editor: the zone for the viewer, the zone and
-the optional name for the editor, the optional name for the scenario card.
+"Chronothermostat") and have a visual editor: the zone, the axes and the chart height
+for the viewer, the zone and the optional name for the editor, the optional name for
+the scenario card.
 
 A typical setup: an everyday view with the scenario card at the top and, for each
 zone, the standard `thermostat` card followed by the viewer card; a separate view
@@ -195,9 +196,9 @@ name: Heating   # optional, replaces the "House scenario" label
 ### Viewer card
 
 `custom:chronothermostat-viewer-card` — one per zone, placed under the zone's
-thermostat card. It shows today's program for the active scenario (past quarter
-hours dimmed, a line at the current time, a band for a forced setpoint up to the next
-step) and one sentence:
+thermostat card. It shows today's program for the active scenario (temperature and
+hour labels, past quarter hours dimmed, a line at the current time, a band for a
+forced setpoint up to the next step) and one sentence:
 
 | Zone status | Sentence |
 |---|---|
@@ -224,6 +225,25 @@ entity: climate.office
 |---|---|---|
 | `entity` | yes | The zone's `climate` entity. |
 | `name` | no | Accepted in YAML but not displayed (the zone is the one of the thermostat card above). |
+| `show_temperature_axis` | no | Temperature labels on the left, with dashed reference lines. Default `true`. |
+| `show_time_axis` | no | Hour labels (0, 6, 12, 18, 24) below the chart. Default `true`. |
+| `scale` | no | Chart height: `auto` (default) spans one degree below the day's lowest value to one degree above its highest, at least five degrees; `fixed` uses `scale_min`–`scale_max`. |
+| `scale_min`, `scale_max` | with `scale: fixed` | Bottom and top of the chart in °C; `scale_min` must be lower than `scale_max`. Values outside the range are drawn at the edge. |
+
+All of them are in the card's visual editor. There the fixed range is limited to what
+the zone's thermostat allows (its `min_temp`–`max_temp`, or 5–30 °C when it does not
+report them): a value outside it, or a top not above the bottom, is refused with a
+message and the card keeps its last valid configuration.
+
+```yaml
+type: custom:chronothermostat-viewer-card
+entity: climate.office
+scale: fixed
+scale_min: 10
+scale_max: 25
+```
+
+<img src="docs/img/viewer-fixed.png" alt="Viewer card with a fixed 10–25 °C range" width="480">
 
 The viewer reads only the zone's status sensor and its `climate` entity. A short
 unavailable blip of the thermostat (some wall thermostats have one after every
@@ -407,7 +427,7 @@ add. Add the bundle as a module resource, with the installed version (from
 lovelace:
   mode: yaml
   resources:
-    - url: /chronothermostat/chronothermostat-cards.js?v=0.1.0
+    - url: /chronothermostat/chronothermostat-cards.js?v=0.2.0
       type: module
 ```
 
