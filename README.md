@@ -4,7 +4,7 @@ A weekly heating program for Home Assistant `climate` entities that behaves like
 classic wall chronothermostat: one house-wide scenario, a quarter-hour program per
 zone, and simple rules for what happens when somebody turns the dial.
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/everyday.png" alt="Everyday view: scenario card, thermostat card and viewer card" width="480">
+![Everyday view: scenario card, thermostat card and viewer card](docs/img/everyday.png)
 
 - One **scenario** for the whole house: Work, Holiday, Away (until a return time) or Off.
 - Every **zone** (a `climate` entity) has two weekly programs, Work and Holiday:
@@ -180,9 +180,9 @@ switched off or forced by hand stay as they are. Away asks for the return date a
 time (rounded to the nearest quarter hour, pre-filled with tomorrow at 19:00) and Off
 asks for confirmation.
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/scenario-card.png" alt="Scenario card in the Away scenario" width="480">
+![Scenario card in the Away scenario](docs/img/scenario-card.png)
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/scenario-card-away-panel.png" alt="Scenario card with the Away panel open" width="480">
+![Scenario card with the Away panel open](docs/img/scenario-card-away-panel.png)
 
 ```yaml
 type: custom:chronothermostat-scenario-card
@@ -210,11 +210,11 @@ forced setpoint up to the next step) and one sentence:
 | Off | *Heating off.* |
 | switched on by hand while Away/Off | *Turned on by hand with the heating off: stays at 20.0 °C until you turn it off or change scenario.* |
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/viewer-schedule.png" alt="Viewer card following the program" width="480">
+![Viewer card following the program](docs/img/viewer-schedule.png)
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/viewer-forced.png" alt="Viewer card with a forced setpoint" width="480">
+![Viewer card with a forced setpoint](docs/img/viewer-forced.png)
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/viewer-zone-off.png" alt="Viewer card of a zone switched off by hand" width="480">
+![Viewer card of a zone switched off by hand](docs/img/viewer-zone-off.png)
 
 ```yaml
 type: custom:chronothermostat-viewer-card
@@ -243,7 +243,7 @@ scale_min: 10
 scale_max: 25
 ```
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/viewer-fixed.png" alt="Viewer card with a fixed 10–25 °C range" width="480">
+![Viewer card with a fixed 10–25 °C range](docs/img/viewer-fixed.png)
 
 The viewer reads only the zone's status sensor and its `climate` entity. A short
 unavailable blip of the thermostat (some wall thermostats have one after every
@@ -254,7 +254,7 @@ zone stays unavailable for more than 5 seconds.
 
 `custom:chronothermostat-editor-card` — one per zone, best in a dedicated view.
 
-<img src="https://raw.githubusercontent.com/dbtswdev/chronothermostat/main/docs/img/editor-card.png" alt="Editor card" width="480">
+![Editor card](docs/img/editor-card.png)
 
 - **Editing: Work · Holiday** chooses which program you edit; it does not change the
   scenario. It opens on the active program (Work when the house is Away or Off).
@@ -427,7 +427,7 @@ add. Add the bundle as a module resource, with the installed version (from
 lovelace:
   mode: yaml
   resources:
-    - url: /chronothermostat/chronothermostat-cards.js?v=0.2.1
+    - url: /chronothermostat/chronothermostat-cards.js?v=0.2.2
       type: module
 ```
 
