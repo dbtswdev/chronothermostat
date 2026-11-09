@@ -427,7 +427,7 @@ add. Add the bundle as a module resource, with the installed version (from
 lovelace:
   mode: yaml
   resources:
-    - url: /chronothermostat/chronothermostat-cards.js?v=0.2.0
+    - url: /chronothermostat/chronothermostat-cards.js?v=0.2.1
       type: module
 ```
 
