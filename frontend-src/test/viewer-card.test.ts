@@ -274,6 +274,15 @@ describe("viewer card", () => {
     expect(Number(bars[40].getAttribute("height"))).toBeCloseTo((100 * 4) / 7, 1);
   });
 
+  it("thins the temperature labels of a very wide YAML range", async () => {
+    const { el } = await mount(
+      { [SENSOR]: sensor("schedule"), [ZONE]: climate() },
+      { entity: ZONE, scale: "fixed", scale_min: 0, scale_max: 60 },
+    );
+    expect(labels(el, ".y-labels")).toEqual(["0°", "10°", "20°", "30°", "40°", "50°", "60°"]);
+    expect(root(el).querySelectorAll(".hgrid").length).toBe(7);
+  });
+
   it("rejects a fixed scale without a valid range", () => {
     const el = document.createElement("chronothermostat-viewer-card") as ChronothermostatViewerCard;
     expect(() =>

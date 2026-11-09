@@ -1,7 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from "lit";
 import type { Hass } from "./api";
 import { langOf, t, type StringKey } from "./i18n";
-import { scaleProblem, thermostatBounds, type ViewerCardConfig } from "./viewer-options";
+import { fitRange, scaleProblem, thermostatBounds, type ViewerCardConfig } from "./viewer-options";
 
 export const ZONE_CARD_EDITOR_TAG = "chronothermostat-zone-card-editor";
 export const VIEWER_CARD_EDITOR_TAG = "chronothermostat-viewer-card-editor";
@@ -142,10 +142,21 @@ export class ChronothermostatViewerCardEditor extends CardConfigEditor<ViewerCar
 
   protected prepare(value: ViewerCardConfig): Prepared<ViewerCardConfig> {
     const shown: ViewerCardConfig = { ...value };
-    const [lo, hi] = this._bounds(shown);
-    if (shown.scale === "fixed" && shown.scale_min === undefined && shown.scale_max === undefined) {
-      shown.scale_min = Math.max(lo, FIXED_PREFILL[0]);
-      shown.scale_max = Math.min(hi, FIXED_PREFILL[1]);
+    const previous = this._config;
+    const bounds = this._bounds(shown);
+    const [lo, hi] = bounds;
+    const fixed = shown.scale === "fixed";
+    const set = ([min, max]: [number, number]): void => {
+      shown.scale_min = min;
+      shown.scale_max = max;
+    };
+    if (fixed && previous?.scale !== "fixed" &&
+        shown.scale_min === undefined && shown.scale_max === undefined) {
+      set(fitRange(FIXED_PREFILL, bounds));
+    } else if (fixed && previous && previous.entity !== shown.entity &&
+        typeof shown.scale_min === "number" && typeof shown.scale_max === "number") {
+      // A different thermostat: keep the range where it fits, else bring it within the new limits.
+      set(fitRange([shown.scale_min, shown.scale_max], bounds));
     }
     const problem = scaleProblem(shown, [lo, hi]);
     if (problem) {
@@ -154,7 +165,7 @@ export class ChronothermostatViewerCardEditor extends CardConfigEditor<ViewerCar
       return { shown, errors: { [problem.field]: message } };
     }
     const config: ViewerCardConfig = { ...shown };
-    delete config.name;
+    if (!config.name) delete config.name;
     if (config.show_temperature_axis !== false) delete config.show_temperature_axis;
     if (config.show_time_axis !== false) delete config.show_time_axis;
     if (config.scale !== "fixed") {

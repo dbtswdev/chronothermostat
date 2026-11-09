@@ -49,6 +49,9 @@ describe("viewer options", () => {
       /lower/,
     );
     expect(configProblem({ entity: "climate.a", scale: "bogus" as never })).toMatch(/scale/);
+    expect(
+      configProblem({ entity: "climate.a", scale: "fixed", scale_min: "15" as never, scale_max: 22 }),
+    ).toBe("scale_min must be a number");
   });
 
   it("editor problem: the fixed range must sit inside the thermostat's limits", () => {

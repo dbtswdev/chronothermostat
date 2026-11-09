@@ -142,6 +142,51 @@ describe("zone card editor", () => {
     expect(seen).toEqual([{ entity: "climate.zone_a", scale: "fixed", scale_min: 17.5, scale_max: 22 }]);
   });
 
+  it("prefills only when switching to fixed: clearing both fields asks for values", async () => {
+    const { el, form } = await mountViewer("en", {
+      entity: "climate.zone_a", scale: "fixed", scale_min: 15, scale_max: 22,
+    });
+    const seen = listen(el);
+    change(form, { ...(form.data as object), scale_min: undefined, scale_max: undefined });
+    await el.updateComplete;
+    expect(seen).toEqual([]);
+    expect((form as unknown as { error: unknown }).error).toEqual({ scale_min: "Enter a value." });
+  });
+
+  it("prefills the whole thermostat range when 16–22 does not fit in it", async () => {
+    const { el, form } = await mountViewer("en", { entity: "climate.zone_a" });
+    el.hass = {
+      ...(el.hass as object),
+      states: { "climate.zone_a": { state: "heat", attributes: { min_temp: 23, max_temp: 30 } } },
+    } as never;
+    const seen = listen(el);
+    change(form, { ...(form.data as object), scale: "fixed" });
+    expect(seen).toEqual([{ entity: "climate.zone_a", scale: "fixed", scale_min: 23, scale_max: 30 }]);
+  });
+
+  it("fits the fixed range into a newly chosen thermostat's limits", async () => {
+    const { el, form } = await mountViewer("en", {
+      entity: "climate.zone_a", scale: "fixed", scale_min: 8, scale_max: 24,
+    });
+    el.hass = {
+      ...(el.hass as object),
+      states: {
+        ...(el.hass as { states: object }).states,
+        "climate.zone_b": { state: "heat", attributes: { min_temp: 10, max_temp: 20 } },
+      },
+    } as never;
+    const seen = listen(el);
+    change(form, { ...(form.data as object), entity: "climate.zone_b" });
+    expect(seen).toEqual([{ entity: "climate.zone_b", scale: "fixed", scale_min: 10, scale_max: 20 }]);
+  });
+
+  it("keeps a name written in YAML", async () => {
+    const { el, form } = await mountViewer("en", { entity: "climate.zone_a", name: "Office" });
+    const seen = listen(el);
+    change(form, { ...(form.data as object), show_time_axis: false });
+    expect(seen).toEqual([{ entity: "climate.zone_a", name: "Office", show_time_axis: false }]);
+  });
+
   it("keeps the YAML short: defaults and an unused range are dropped", async () => {
     const { el, form } = await mountViewer("en", {
       entity: "climate.zone_a", scale: "fixed", scale_min: 15, scale_max: 22,

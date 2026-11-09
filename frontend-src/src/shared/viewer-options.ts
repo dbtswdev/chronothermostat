@@ -57,10 +57,34 @@ export function thermostatBounds(attrs: Record<string, unknown> | undefined): [n
 export function configProblem(config: ViewerCardConfig): string | undefined {
   if (config.scale === undefined || config.scale === "auto") return undefined;
   if (config.scale !== "fixed") return 'scale must be "auto" or "fixed"';
-  if (!isNumber(config.scale_min)) return "scale_min is required with a fixed scale";
-  if (!isNumber(config.scale_max)) return "scale_max is required with a fixed scale";
-  if (config.scale_min >= config.scale_max) return "scale_min must be lower than scale_max";
+  for (const key of ["scale_min", "scale_max"] as const) {
+    if (config[key] === undefined) return `${key} is required with a fixed scale`;
+    if (!isNumber(config[key])) return `${key} must be a number`;
+  }
+  const { scale_min: min, scale_max: max } = config as { scale_min: number; scale_max: number };
+  if (min >= max) return "scale_min must be lower than scale_max";
   return undefined;
+}
+
+/** At most this many temperature labels: more would overlap in the viewer's short chart. */
+const MAX_LABELS = 7;
+
+/** Every k-th tick (k = 1, 2, 4, 10, …) so that at most MAX_LABELS remain. */
+export function thinTicks<T>(ticks: T[]): T[] {
+  for (const k of [1, 2, 4, 10, 20, 40, 100]) {
+    if (Math.ceil(ticks.length / k) <= MAX_LABELS) return ticks.filter((_, i) => i % k === 0);
+  }
+  return ticks.filter((_, i) => i === 0 || i === ticks.length - 1);
+}
+
+/** A fixed range inside the thermostat's limits: [min, max] clamped, else the whole range. */
+export function fitRange(
+  [min, max]: [number, number],
+  [lo, hi]: [number, number],
+): [number, number] {
+  const a = Math.min(hi, Math.max(lo, min));
+  const b = Math.min(hi, Math.max(lo, max));
+  return a < b ? [a, b] : [lo, hi];
 }
 
 /** What is wrong with the fixed range for this thermostat (shown by the config editor). */

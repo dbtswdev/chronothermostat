@@ -4,7 +4,7 @@ import { SLOTS, barGeometry } from "./shared/chart";
 import { formatReturn, formatTemp, formatUntil, weekdayKeyOf, weekdayName } from "./shared/format";
 import { langOf, t, type Lang, type StringKey } from "./shared/i18n";
 import {
-  configProblem, viewerOptions, viewerScale, type ViewerCardConfig,
+  configProblem, thinTicks, viewerOptions, viewerScale, type ViewerCardConfig,
 } from "./shared/viewer-options";
 import { VIEWER_CARD_EDITOR_TAG } from "./shared/zone-card-editor";
 
@@ -276,18 +276,22 @@ export class ChronothermostatViewerCard extends LitElement {
     const nowX = ((now.getHours() * 60 + now.getMinutes()) / 1440) * CHART_WIDTH;
 
     const pct = (y: number): string => `${round2((y / CHART_HEIGHT) * 100)}%`;
+    const yTicks = thinTicks(geo.yTicks);
 
     // Labels are HTML around the SVG: the SVG is stretched to the card width, text in it would be too.
-    return html`<div class="chart ${options.temperatureAxis ? "with-temperatures" : ""}">
+    const classes = [
+      options.temperatureAxis ? "with-temperatures" : "", options.timeAxis ? "with-time" : "",
+    ].join(" ");
+    return html`<div class="chart ${classes}">
       <div class="plot">
         ${options.temperatureAxis
           ? html`<div class="y-labels" aria-hidden="true">
-              ${geo.yTicks.map((tick) => html`<span style="top: ${pct(tick.y)}">${tick.label}°</span>`)}
+              ${yTicks.map((tick) => html`<span style="top: ${pct(tick.y)}">${tick.label}°</span>`)}
             </div>`
           : nothing}
         <svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
         ${options.temperatureAxis
-          ? geo.yTicks.map((tick) => svg`<line class="hgrid" x1="0" x2=${CHART_WIDTH}
+          ? yTicks.map((tick) => svg`<line class="hgrid" x1="0" x2=${CHART_WIDTH}
               y1=${round2(tick.y)} y2=${round2(tick.y)}></line>`)
           : nothing}
         ${[6, 12, 18].map((hour) => svg`<line class="grid" x1=${hour * 20} x2=${hour * 20}
@@ -338,6 +342,10 @@ export class ChronothermostatViewerCard extends LitElement {
     /* Room above the plot for half of the top temperature label. */
     .chart.with-temperatures {
       margin-top: 10px;
+    }
+    /* ...and below it for half of the bottom one when no hour labels sit there. */
+    .chart.with-temperatures:not(.with-time) {
+      margin-bottom: 10px;
     }
     .plot {
       flex: 1;
