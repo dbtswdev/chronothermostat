@@ -46,6 +46,17 @@ const EN = {
   status_unavailable: "Thermostat unavailable.",
   config_entity: "Thermostat",
   config_name: "Name (optional)",
+  config_show_temperature_axis: "Show temperature labels",
+  config_show_time_axis: "Show hour labels",
+  config_scale: "Chart height",
+  config_scale_auto: "Automatic (follows the day's values)",
+  config_scale_fixed: "Fixed range",
+  config_scale_min: "Lowest temperature",
+  config_scale_max: "Highest temperature",
+  config_error_missing: "Enter a value.",
+  config_error_below: "The thermostat allows no less than {limit} °C.",
+  config_error_above: "The thermostat allows no more than {limit} °C.",
+  config_error_order: "Must be higher than the lowest temperature.",
 } as const;
 
 export type StringKey = keyof typeof EN;
@@ -98,6 +109,17 @@ const IT: Record<StringKey, string> = {
   status_unavailable: "Termostato non disponibile.",
   config_entity: "Termostato",
   config_name: "Nome (facoltativo)",
+  config_show_temperature_axis: "Mostra le temperature",
+  config_show_time_axis: "Mostra le ore",
+  config_scale: "Altezza del grafico",
+  config_scale_auto: "Automatica (segue i valori del giorno)",
+  config_scale_fixed: "Range fisso",
+  config_scale_min: "Temperatura minima",
+  config_scale_max: "Temperatura massima",
+  config_error_missing: "Inserisci un valore.",
+  config_error_below: "Il termostato non scende sotto {limit} °C.",
+  config_error_above: "Il termostato non sale sopra {limit} °C.",
+  config_error_order: "Deve essere più alta della temperatura minima.",
 };
 
 export const STRINGS: Record<Lang, Record<StringKey, string>> = { en: EN, it: IT };

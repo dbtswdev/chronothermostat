@@ -233,6 +233,54 @@ describe("viewer card", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  const labels = (el: HTMLElement, sel: string): string[] =>
+    Array.from(root(el).querySelectorAll(`${sel} span`)).map((s) => s.textContent?.trim() ?? "");
+
+  it("shows temperature and hour labels by default", async () => {
+    // today(): 19 °C then 15 °C → automatic scale 14..20, one-degree ticks.
+    const { el } = await mount({ [SENSOR]: sensor("schedule"), [ZONE]: climate() });
+    expect(labels(el, ".y-labels")).toEqual(["14°", "15°", "16°", "17°", "18°", "19°", "20°"]);
+    expect(labels(el, ".x-labels")).toEqual(["0", "6", "12", "18", "24"]);
+    expect(root(el).querySelectorAll(".hgrid").length).toBe(7);
+    // 19 °C sits at 1/6 of the height from the top of the 14..20 range.
+    const top = (root(el).querySelectorAll(".y-labels span")[5] as HTMLElement).style.top;
+    expect(parseFloat(top)).toBeCloseTo(100 / 6, 1);
+  });
+
+  it("hides each axis on request", async () => {
+    const { el } = await mount(
+      { [SENSOR]: sensor("schedule"), [ZONE]: climate() },
+      { entity: ZONE, show_temperature_axis: false },
+    );
+    expect(root(el).querySelector(".y-labels")).toBeNull();
+    expect(root(el).querySelector(".hgrid")).toBeNull();
+    expect(labels(el, ".x-labels")).toHaveLength(5);
+    el.setConfig({ entity: ZONE, show_time_axis: false } as never);
+    await el.updateComplete;
+    expect(root(el).querySelector(".x-labels")).toBeNull();
+    expect(labels(el, ".y-labels")).toHaveLength(7);
+  });
+
+  it("draws a fixed range whatever the day's values, clipping what falls outside", async () => {
+    const values = Array.from({ length: 96 }, (_, i) => (i < 36 ? 25 : 19));
+    const { el } = await mount(
+      { [SENSOR]: sensor("schedule", { today: values }), [ZONE]: climate() },
+      { entity: ZONE, scale: "fixed", scale_min: 15, scale_max: 22 },
+    );
+    expect(labels(el, ".y-labels")).toEqual(["16°", "18°", "20°", "22°"]);
+    const bars = root(el).querySelectorAll(".bar");
+    expect(Number(bars[0].getAttribute("y"))).toBe(0); // 25 °C clipped at the top
+    // 19 °C on 15..22: 4/7 of the height.
+    expect(Number(bars[40].getAttribute("height"))).toBeCloseTo((100 * 4) / 7, 1);
+  });
+
+  it("rejects a fixed scale without a valid range", () => {
+    const el = document.createElement("chronothermostat-viewer-card") as ChronothermostatViewerCard;
+    expect(() =>
+      el.setConfig({ entity: ZONE, scale: "fixed", scale_min: 22, scale_max: 18 } as never),
+    ).toThrow("scale_min must be lower than scale_max");
+  });
+
   it("registers the element and the card picker entry", () => {
     expect(customElements.get("chronothermostat-viewer-card")).toBeDefined();
     expect(window.customCards?.some((c) => c.type === "chronothermostat-viewer-card")).toBe(true);

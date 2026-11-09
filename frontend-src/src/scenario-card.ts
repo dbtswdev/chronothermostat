@@ -346,7 +346,7 @@ export class ChronothermostatScenarioCard extends LitElement {
 
 /** Visual config editor of the scenario card: the optional name. */
 export class ChronothermostatScenarioCardEditor extends CardConfigEditor<ScenarioCardConfig> {
-  protected get schema(): FormField[] {
+  protected schema(): FormField[] {
     return [NAME_FIELD];
   }
 }

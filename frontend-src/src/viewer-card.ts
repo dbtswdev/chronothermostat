@@ -1,9 +1,12 @@
 import { LitElement, css, html, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import type { Hass } from "./shared/api";
-import { SLOTS, barGeometry, tempRange } from "./shared/chart";
+import { SLOTS, barGeometry } from "./shared/chart";
 import { formatReturn, formatTemp, formatUntil, weekdayKeyOf, weekdayName } from "./shared/format";
 import { langOf, t, type Lang, type StringKey } from "./shared/i18n";
-import { VIEWER_CARD_EDITOR_TAG, type ZoneCardConfig } from "./shared/zone-card-editor";
+import {
+  configProblem, viewerOptions, viewerScale, type ViewerCardConfig,
+} from "./shared/viewer-options";
+import { VIEWER_CARD_EDITOR_TAG } from "./shared/zone-card-editor";
 
 export const VIEWER_CARD_TAG = "chronothermostat-viewer-card";
 
@@ -15,8 +18,6 @@ const CLOCK_MS = 60000;
 const GRACE_MS = 5000;
 const CHART_WIDTH = 480;
 const CHART_HEIGHT = 100;
-const MIN_TEMP = 5;
-const MAX_TEMP = 35;
 /** Sensor states for which the chart of today makes no sense. */
 const CHARTLESS = new Set(["away", "away_no_return", "off", "zone_on_manual"]);
 
@@ -38,7 +39,7 @@ export class ChronothermostatViewerCard extends LitElement {
   };
 
   declare hass?: Hass;
-  declare private _config?: ZoneCardConfig;
+  declare private _config?: ViewerCardConfig;
   declare private _now: Date;
 
   private _sensorId?: string;
@@ -59,15 +60,17 @@ export class ChronothermostatViewerCard extends LitElement {
     return document.createElement(VIEWER_CARD_EDITOR_TAG);
   }
 
-  static getStubConfig(hass?: Hass): ZoneCardConfig {
+  static getStubConfig(hass?: Hass): ViewerCardConfig {
     const climate = Object.keys(hass?.states ?? {}).find((id) => id.startsWith("climate."));
     return { entity: climate ?? "" };
   }
 
-  setConfig(config: ZoneCardConfig): void {
+  setConfig(config: ViewerCardConfig): void {
     if (!config || typeof config.entity !== "string" || config.entity === "") {
       throw new Error("entity is required");
     }
+    const problem = configProblem(config);
+    if (problem) throw new Error(problem);
     if (this._config && this._config.entity !== config.entity) this._sensorId = undefined;
     this._config = { ...config };
   }
@@ -253,7 +256,8 @@ export class ChronothermostatViewerCard extends LitElement {
     const cur = slotOf(now);
     const target = climate?.attributes?.temperature;
     const forced = key === "forced" && isNumber(target);
-    const [min, max] = tempRange(forced ? [...values, target] : values, MIN_TEMP, MAX_TEMP);
+    const options = viewerOptions(this._config as ViewerCardConfig);
+    const [min, max] = viewerScale(options.fixed, forced ? [...values, target] : values);
     const opts = {
       width: CHART_WIDTH, height: CHART_HEIGHT, min, max, padLeft: 0, padBottom: 0,
     };
@@ -271,8 +275,21 @@ export class ChronothermostatViewerCard extends LitElement {
     }
     const nowX = ((now.getHours() * 60 + now.getMinutes()) / 1440) * CHART_WIDTH;
 
-    return html`<div class="chart">
-      <svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
+    const pct = (y: number): string => `${round2((y / CHART_HEIGHT) * 100)}%`;
+
+    // Labels are HTML around the SVG: the SVG is stretched to the card width, text in it would be too.
+    return html`<div class="chart ${options.temperatureAxis ? "with-temperatures" : ""}">
+      <div class="plot">
+        ${options.temperatureAxis
+          ? html`<div class="y-labels" aria-hidden="true">
+              ${geo.yTicks.map((tick) => html`<span style="top: ${pct(tick.y)}">${tick.label}°</span>`)}
+            </div>`
+          : nothing}
+        <svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" preserveAspectRatio="none" aria-hidden="true">
+        ${options.temperatureAxis
+          ? geo.yTicks.map((tick) => svg`<line class="hgrid" x1="0" x2=${CHART_WIDTH}
+              y1=${round2(tick.y)} y2=${round2(tick.y)}></line>`)
+          : nothing}
         ${[6, 12, 18].map((hour) => svg`<line class="grid" x1=${hour * 20} x2=${hour * 20}
           y1="0" y2=${CHART_HEIGHT}></line>`)}
         ${geo.bars.map((bar, i) => svg`<rect class="bar ${i < cur ? "past" : ""}" shape-rendering="crispEdges"
@@ -280,7 +297,14 @@ export class ChronothermostatViewerCard extends LitElement {
           height=${round2(bar.h)}></rect>`)}
         ${band}
         <line class="now" x1=${round2(nowX)} x2=${round2(nowX)} y1="0" y2=${CHART_HEIGHT}></line>
-      </svg>
+        </svg>
+      </div>
+      ${options.timeAxis
+        ? html`<div class="x-labels ${options.temperatureAxis ? "indent" : ""}" aria-hidden="true">
+            ${geo.xTicks.map((tick) => html`<span style="left: ${round2((tick.x / CHART_WIDTH) * 100)}%"
+              >${tick.label}</span>`)}
+          </div>`
+        : nothing}
     </div>`;
   }
 
@@ -308,11 +332,64 @@ export class ChronothermostatViewerCard extends LitElement {
     .chart {
       margin: 6px 0;
       height: 100px;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Room above the plot for half of the top temperature label. */
+    .chart.with-temperatures {
+      margin-top: 10px;
+    }
+    .plot {
+      flex: 1;
+      min-height: 0;
+      display: flex;
     }
     .chart svg {
       display: block;
-      width: 100%;
-      height: 100px;
+      flex: 1;
+      min-width: 0;
+      height: 100%;
+    }
+    .y-labels,
+    .x-labels {
+      position: relative;
+      font-size: 11px;
+      line-height: 12px;
+      color: var(--secondary-text-color);
+      white-space: nowrap;
+    }
+    .y-labels {
+      flex: none;
+      width: 28px;
+    }
+    .y-labels span {
+      position: absolute;
+      right: 4px;
+      transform: translateY(-50%);
+    }
+    .x-labels {
+      flex: none;
+      height: 14px;
+    }
+    .x-labels.indent {
+      margin-left: 28px;
+    }
+    .x-labels span {
+      position: absolute;
+      top: 2px;
+      transform: translateX(-50%);
+    }
+    .x-labels span:first-child {
+      transform: none;
+    }
+    .x-labels span:last-child {
+      transform: translateX(-100%);
+    }
+    .hgrid {
+      stroke: var(--divider-color, rgba(127, 127, 127, 0.4));
+      stroke-width: 1;
+      stroke-dasharray: 2 3;
+      vector-effect: non-scaling-stroke;
     }
     .grid {
       stroke: var(--divider-color, rgba(127, 127, 127, 0.4));
