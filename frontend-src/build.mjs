@@ -45,11 +45,12 @@ function bundledPackages(metafile) {
     packages.set(name, {
       name,
       version: pkg.version,
-      license: pkg.license,
+      license: typeof pkg.license === "string" ? pkg.license : "see the licence text",
       text: readFileSync(file, "utf8").replace(/\r\n/g, "\n").trim(),
     });
   }
-  return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
+  // By code point, not by locale: the file must come out the same on every machine.
+  return [...packages.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
 /** Write the licences of the bundled packages next to the bundle, identical texts once. */

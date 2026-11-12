@@ -34,6 +34,16 @@ def _valid_day(day: Any) -> bool:
     )
 
 
+def _valid_datetime(value: Any) -> bool:
+    """Return True for a string that parses as a date and time."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return dt_util.parse_datetime(value) is not None
+    except ValueError:
+        return False
+
+
 def _repaired_week(zone_id: str, program: str, stored: Any) -> Week:
     """Return a stored week with every unusable day replaced by the default."""
     week = default_week()
@@ -71,12 +81,12 @@ def _repaired(stored: Any) -> dict[str, Any]:
         _LOGGER.warning("Stored data is unusable; starting from the defaults")
         return data
     scenario = stored.get("scenario", Scenario.WORK.value)
-    if scenario in {item.value for item in Scenario}:
+    if isinstance(scenario, str) and scenario in {item.value for item in Scenario}:
         data["scenario"] = scenario
     else:
         _LOGGER.warning("Stored scenario %r is unknown; using work", scenario)
     return_at = stored.get("return_at")
-    if isinstance(return_at, str) and dt_util.parse_datetime(return_at) is not None:
+    if _valid_datetime(return_at):
         data["return_at"] = return_at
     elif return_at is not None:
         _LOGGER.warning("Stored return time %r is unusable; dropped", return_at)

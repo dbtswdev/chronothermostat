@@ -215,3 +215,19 @@ async def test_rename_zone_moves_programs_and_keeps_order(hass, hass_storage):
 
     assert s.zone_ids == ["climate.new", "climate.b"]
     assert s.get_week("climate.new", Scenario.WORK)["mon"] == [21.0] * 96
+
+
+async def test_load_survives_values_of_the_wrong_type(hass, hass_storage, caplog):
+    _stored(
+        hass_storage,
+        {
+            "scenario": ["away"],
+            "return_at": "2026-13-45T00:00:00",
+            "zones": {"climate.a": {"work": _good_week(), "holiday": _good_week()}},
+        },
+    )
+    s = ProgramStore(hass, "e1")
+    await s.async_load()
+    assert s.scenario is Scenario.WORK
+    assert s.return_at is None
+    assert s.get_week("climate.a", Scenario.WORK)["mon"] == [21.0] * 96

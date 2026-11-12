@@ -136,3 +136,34 @@ async def test_renamed_climate_keeps_its_zone_program_and_sensor(
     assert registry.async_get(sensor_id).unique_id == f"{entry_id}_climate.living_status"
     assert hass.states.get(sensor_id).attributes["zone"] == "climate.living"
     assert hass.states.get(sensor_id).state != "unavailable"
+
+
+async def test_rename_onto_another_configured_zone_changes_nothing(
+    hass, config_entry, two_climates, climate_calls, caplog
+):
+    registry = er.async_get(hass)
+    state = hass.states.get("climate.zone_a")
+    hass.states.async_remove("climate.zone_a")
+    registry.async_get_or_create("climate", "demo", "a", suggested_object_id="zone_a")
+    hass.states.async_set("climate.zone_a", state.state, state.attributes)
+    # Zone B is configured but its climate is gone, so its id is free.
+    hass.states.async_remove("climate.zone_b")
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    data.store.set_day("climate.zone_a", Scenario.WORK, "mon", [21.0] * 96)
+    data.store.set_day("climate.zone_b", Scenario.WORK, "mon", [17.0] * 96)
+    await data.store.async_save()
+
+    hass.states.async_remove("climate.zone_a")
+    registry.async_update_entity("climate.zone_a", new_entity_id="climate.zone_b")
+    hass.states.async_set("climate.zone_b", state.state, state.attributes)
+    await hass.async_block_till_done()
+
+    # Two zones cannot share one climate: nothing is moved, and it is logged.
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    assert data.zone_ids == two_climates
+    assert data.store.get_week("climate.zone_a", Scenario.WORK)["mon"] == [21.0] * 96
+    assert data.store.get_week("climate.zone_b", Scenario.WORK)["mon"] == [17.0] * 96
+    assert "already a zone" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

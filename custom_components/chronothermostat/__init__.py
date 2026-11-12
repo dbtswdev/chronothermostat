@@ -98,13 +98,24 @@ async def _async_rename_zone(
     """Move a zone to its climate's new entity id, then reload the entry.
 
     The zone's programs and its status sensor follow the new id. Dashboard
-    cards keep the old id until they are edited.
+    cards keep the old id until they are edited. A new id that is already
+    a zone changes nothing: two zones cannot share one climate.
     """
     data: ChronoData | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if data is None or old_id not in data.zone_ids:
         return
-    data.store.rename_zone(old_id, new_id)
-    await data.store.async_save()
+    if new_id in data.zone_ids:
+        _LOGGER.warning(
+            "Climate %s is now %s, which is already a zone: zone %s is left "
+            "without a climate until the zones are configured again",
+            old_id,
+            new_id,
+            old_id,
+        )
+        return
+    # From here to the reload the engine must not tick or save: it still
+    # knows the zone by its old id.
+    await data.engine.async_stop()
     registry = er.async_get(hass)
     sensor_id = registry.async_get_entity_id(
         "sensor", DOMAIN, status_unique_id(entry.entry_id, old_id)
@@ -113,6 +124,8 @@ async def _async_rename_zone(
         registry.async_update_entity(
             sensor_id, new_unique_id=status_unique_id(entry.entry_id, new_id)
         )
+    data.store.rename_zone(old_id, new_id)
+    await data.store.async_save()
     zones = [new_id if zone_id == old_id else zone_id for zone_id in data.zone_ids]
     if CONF_ZONES in entry.options:
         hass.config_entries.async_update_entry(
