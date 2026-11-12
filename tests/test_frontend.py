@@ -11,7 +11,7 @@ from custom_components.chronothermostat.frontend import (
     async_register_frontend,
 )
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 
 
 def _matching(hass):
