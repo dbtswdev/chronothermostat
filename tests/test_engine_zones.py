@@ -30,6 +30,8 @@ ZONE_B = "climate.zone_b"
 SLOT_0700 = 28
 SLOT_0800 = 32
 ZONE_ATTRIBUTES = {"temperature": 19.0, "min_temp": 5, "max_temp": 30}
+# A setpoint other than the program's 19.0.
+FORCED_ATTRIBUTES = {**ZONE_ATTRIBUTES, "temperature": 21.0}
 
 
 def at(day: int, hour: int, minute: int = 0, second: int = 0) -> datetime:
@@ -891,3 +893,107 @@ async def test_public_calls_after_unload_raise_and_change_nothing(
     assert temp_calls == []
     assert mode_calls == []
     assert hass_storage[key] == stored_before
+
+
+async def test_zone_switched_off_while_heat_call_is_in_flight_stays_off(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call.data["entity_id"] == ZONE_A and call.service == "set_hvac_mode":
+            # The thermostat obeys, the user switches it off again by hand,
+            # and only then the call fails: the hand wins.
+            hass.states.async_set(ZONE_A, "heat", FORCED_ATTRIBUTES)
+            hass.states.async_set(ZONE_A, "off", FORCED_ATTRIBUTES)
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    await hass.async_block_till_done()
+
+    assert sent == [(ZONE_A, "heat"), (ZONE_B, "heat"), (ZONE_B, 19.0)]
+    assert data.engine._pending == {}
+    sent.clear()
+
+    await time_travel(at(10, 8))
+    assert sent == []
+    assert hass.states.get(ZONE_A).state == "off"
+
+
+async def test_failed_mode_call_that_landed_counts_as_delivered(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call.data["entity_id"] == ZONE_A and call.service == "set_hvac_mode":
+            # The thermostat switches on but answers too late.
+            hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    await hass.async_block_till_done()
+
+    # The mode is not retried and the temperature follows at once.
+    assert sent == [(ZONE_A, "heat"), (ZONE_A, 19.0), (ZONE_B, "heat"), (ZONE_B, 19.0)]
+    assert data.engine._pending == {}
+
+
+async def test_zone_switched_on_by_hand_after_a_late_off_is_left_alone(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call.data["entity_id"] == ZONE_A:
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    assert data.engine._pending == {ZONE_A: PendingCommand("off", None)}
+
+    # The off lands late: nothing is left to retry.
+    hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert data.engine._pending == {}
+
+    # Switched on by hand with the house off: left alone (§4.6).
+    hass.states.async_set(ZONE_A, "heat", {**ZONE_ATTRIBUTES, "temperature": 21.0})
+    await hass.async_block_till_done()
+    sent.clear()
+    await time_travel(at(10, 8))
+    assert sent == []
+    assert hass.states.get(ZONE_A).state == "heat"
+
+
+async def test_pending_off_is_dropped_when_zone_returns_already_off(
+    hass, setup_at, climate_calls
+):
+    temp_calls, mode_calls = climate_calls
+    data = await setup_at(at(10, 8))
+    hass.states.async_set(ZONE_B, "unavailable")
+    await data.engine.async_set_scenario(Scenario.OFF)
+    assert data.engine._pending == {ZONE_B: PendingCommand("off", None)}
+    mode_calls.clear()
+
+    hass.states.async_set(ZONE_B, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+
+    assert mode_calls == []
+    assert data.engine._pending == {}

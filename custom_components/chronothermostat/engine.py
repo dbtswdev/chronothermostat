@@ -158,6 +158,8 @@ class Engine:
         self._unsub_zones: CALLBACK_TYPE | None = None
         # Last hvac mode of each zone seen while it was available.
         self._last_mode: dict[str, str] = {}
+        # How many times each zone was seen switching between off and on.
+        self._mode_switches: dict[str, int] = {}
         # Set by async_stop: from then on the engine sends and saves nothing.
         self._stopped = False
         self._tasks: set[asyncio.Task[None]] = set()
@@ -378,8 +380,11 @@ class Engine:
         after each command is neither "switched on" nor "switched off", and
         a switch-on that reaches Home Assistant across a blip still counts.
         A zone becoming available (from missing, unavailable or unknown)
-        gets its pending command. A zone switched off by hand drops a pending
-        heat, so no retry switches it back on (§4.6).
+        gets its pending command. A zone switched off drops its pending
+        command, so no retry switches it back on (§4.6). A zone that shows the
+        mode of its pending command needs that mode no more: a call that
+        failed or timed out may still have reached the thermostat, and
+        resending it later would undo what the user did by hand meanwhile.
         """
         new_state = event.data["new_state"]
         if not _is_available(new_state):
@@ -390,11 +395,20 @@ class Engine:
         turned_on = last_mode == HVAC_OFF and new_state.state != HVAC_OFF
         turned_off = last_mode not in (None, HVAC_OFF) and new_state.state == HVAC_OFF
         became_available = not _is_available(event.data["old_state"])
+        if turned_on or turned_off:
+            self._mode_switches[zone_id] = self._mode_switches.get(zone_id, 0) + 1
         pending = self._pending.get(zone_id)
-        if turned_off and pending is not None and pending.hvac_mode == HVAC_ON:
-            # Dropped right away, before a queued tick or retry can resend it.
+        if turned_off and pending is not None:
+            # Dropped right away, before a queued tick or retry can resend it:
+            # a pending heat or temperature is not for a zone that is off, and
+            # a pending off is done.
             del self._pending[zone_id]
-            _LOGGER.debug("%s: switched off by hand, pending heat dropped", zone_id)
+            _LOGGER.debug("%s: switched off, pending command dropped", zone_id)
+        elif pending is not None and pending.hvac_mode == new_state.state:
+            self._drop_pending_mode(zone_id)
+            _LOGGER.debug(
+                "%s: already %s, pending mode dropped", zone_id, new_state.state
+            )
         if turned_on or became_available:
             self._create_task(
                 self._async_zone_event(
@@ -412,6 +426,16 @@ class Engine:
         if not task.done():
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+
+    def _drop_pending_mode(self, zone_id: str) -> None:
+        """Forget the hvac mode of a zone's pending command, keep the rest."""
+        pending = self._pending.get(zone_id)
+        if pending is None:
+            return
+        if pending.temperature is None:
+            del self._pending[zone_id]
+        else:
+            self._pending[zone_id] = replace(pending, hvac_mode=None)
 
     def _raise_if_stopped(self) -> None:
         """Refuse a public call once the engine is stopped (lock held)."""
@@ -524,17 +548,26 @@ class Engine:
         In away or off the zone is left alone (§4.6). A zone that already
         holds the value is not sent it again: that is also the case when the
         engine itself turned the zone on, since its own set_temperature lands
-        under the lock before this runs.
+        under the lock before this runs. A zone switched off again before
+        this runs gets nothing.
         """
+        zone = self.zone_state(zone_id)
+        if zone.hvac_mode in (None, HVAC_OFF):
+            # Switched off again (or gone) before this queued work ran.
+            return
         scenario = self.scenario
         target = rules.zone_turned_on_target(
             scenario, self._week(zone_id, scenario), dt_util.now()
         )
         if target is None:
             return
-        current = self.zone_state(zone_id).target
+        current = zone.target
         if current is not None and abs(round_half(current) - target) <= TEMP_TOLERANCE:
             _LOGGER.debug("%s: turned on, already at %s", zone_id, target)
+            pending = self._pending.get(zone_id)
+            if pending is not None and pending.hvac_mode is None:
+                # The zone holds the program value: nothing is left to resend.
+                del self._pending[zone_id]
             return
         await self._send(zone_id, hvac_mode=None, temperature=target, reason="zone_on")
 
@@ -660,12 +693,32 @@ class Engine:
         right before the call, a failed or timed out call) become the zone's
         pending command; parts delivered now drop out of it. The temperature
         is not sent while the hvac mode is undelivered.
+
+        A mode call that fails or times out is judged by what the zone shows
+        afterwards. If it shows the mode, the call did land. If the zone was
+        switched while the call was in flight and shows another mode, someone
+        acted by hand: the hand wins and nothing of this command stays
+        pending (§4.6).
         """
         mode_left, temperature_left = hvac_mode, temperature
+        switches = self._mode_switches.get(zone_id, 0)
         if mode_left is not None and await self._call(
             zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
         ):
             mode_left = None
+        elif mode_left is not None:
+            if self.zone_state(zone_id).hvac_mode == mode_left:
+                _LOGGER.debug("%s: the zone is %s anyway", zone_id, mode_left)
+                mode_left = None
+            elif self._mode_switches.get(zone_id, 0) != switches:
+                _LOGGER.info(
+                    "%s: switched by hand during set hvac_mode %s, left alone (%s)",
+                    zone_id,
+                    mode_left,
+                    reason,
+                )
+                self._pending.pop(zone_id, None)
+                return
         if (
             mode_left is None
             and temperature_left is not None
