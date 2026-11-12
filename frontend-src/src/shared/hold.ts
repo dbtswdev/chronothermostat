@@ -3,7 +3,14 @@ export interface HoldOpts {
   interval: number;
 }
 
-/** Runs fn on pointerdown, then repeats while the pointer stays down. Returns a detach function. */
+/** Events that end a pointer hold (blur and a lost capture cover a release seen elsewhere). */
+const STOP_EVENTS = ["pointerup", "pointerleave", "pointercancel", "lostpointercapture", "blur"];
+
+/**
+ * Runs fn on pointerdown, then repeats while the pointer stays down; from the keyboard, runs fn
+ * on every Enter or Space keydown (the keyboard's own repeat does the rest). Returns a detach
+ * function.
+ */
 export function attachHold(
   el: HTMLElement,
   fn: () => void,
@@ -25,20 +32,25 @@ export function attachHold(
     fn();
     timer = setTimeout(tick, opts.delay);
   };
+  const key = (ev: Event): void => {
+    const pressed = (ev as KeyboardEvent).key;
+    if (pressed !== "Enter" && pressed !== " ") return;
+    // Also keeps Space from scrolling the page.
+    ev.preventDefault();
+    fn();
+  };
   const noMenu = (ev: Event): void => ev.preventDefault();
 
   el.addEventListener("pointerdown", start);
-  el.addEventListener("pointerup", stop);
-  el.addEventListener("pointerleave", stop);
-  el.addEventListener("pointercancel", stop);
+  for (const name of STOP_EVENTS) el.addEventListener(name, stop);
+  el.addEventListener("keydown", key);
   el.addEventListener("contextmenu", noMenu);
 
   return () => {
     stop();
     el.removeEventListener("pointerdown", start);
-    el.removeEventListener("pointerup", stop);
-    el.removeEventListener("pointerleave", stop);
-    el.removeEventListener("pointercancel", stop);
+    for (const name of STOP_EVENTS) el.removeEventListener(name, stop);
+    el.removeEventListener("keydown", key);
     el.removeEventListener("contextmenu", noMenu);
   };
 }

@@ -201,6 +201,23 @@ describe("editor card", () => {
     expect(text(el, ".temp")).toBe("21.0 °C");
   });
 
+  it("the step buttons work from the keyboard", async () => {
+    const { el } = await mount();
+    const key = async (sel: string, k: string): Promise<void> => {
+      q(el, sel).dispatchEvent(new KeyboardEvent("keydown", { key: k, cancelable: true }));
+      await flush(el);
+    };
+    await key("#plus", "Enter");
+    await key("#plus", " ");
+    expect(text(el, ".temp")).toBe("20.0 °C");
+    await key("#minus", "Enter");
+    expect(text(el, ".temp")).toBe("19.5 °C");
+    await key("#next", " ");
+    expect(text(el, ".time")).toBe("06:45");
+    await key("#prev", "Enter");
+    expect(text(el, ".time")).toBe("06:30");
+  });
+
   it("test_continue_copies_value_to_next_slot", async () => {
     const { el } = await mount();
     await press(el, "#plus");
