@@ -158,8 +158,8 @@ class Engine:
         self._unsub_zones: CALLBACK_TYPE | None = None
         # Last hvac mode of each zone seen while it was available.
         self._last_mode: dict[str, str] = {}
-        # How many times each zone was seen switching between off and on.
-        self._mode_switches: dict[str, int] = {}
+        # Modes each zone showed while a mode call to it was in flight.
+        self._modes_seen: dict[str, set[str]] = {}
         # Set by async_stop: from then on the engine sends and saves nothing.
         self._stopped = False
         self._tasks: set[asyncio.Task[None]] = set()
@@ -395,8 +395,8 @@ class Engine:
         turned_on = last_mode == HVAC_OFF and new_state.state != HVAC_OFF
         turned_off = last_mode not in (None, HVAC_OFF) and new_state.state == HVAC_OFF
         became_available = not _is_available(event.data["old_state"])
-        if turned_on or turned_off:
-            self._mode_switches[zone_id] = self._mode_switches.get(zone_id, 0) + 1
+        if zone_id in self._modes_seen:
+            self._modes_seen[zone_id].add(new_state.state)
         pending = self._pending.get(zone_id)
         if turned_off and pending is not None:
             # Dropped right away, before a queued tick or retry can resend it:
@@ -694,25 +694,33 @@ class Engine:
         pending command; parts delivered now drop out of it. The temperature
         is not sent while the hvac mode is undelivered.
 
-        A mode call that fails or times out is judged by what the zone shows
-        afterwards. If it shows the mode, the call did land. If the zone was
-        switched while the call was in flight and shows another mode, someone
-        acted by hand: the hand wins and nothing of this command stays
-        pending (§4.6).
+        A mode call that fails or times out is judged by what the zone
+        showed. The call did land if the zone shows the mode now, or reached
+        it while the call was in flight and has shown no other mode since
+        (the Wall Display's blip right after a command must not hide it). If
+        the zone reached the mode during the call and then left it, someone
+        undid it by hand: the hand wins and nothing of this command stays
+        pending (§4.6). Anything else, such as a zone that is away or the
+        late report of an earlier command, leaves the mode pending as usual.
         """
         mode_left, temperature_left = hvac_mode, temperature
-        switches = self._mode_switches.get(zone_id, 0)
-        if mode_left is not None and await self._call(
-            zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
-        ):
-            mode_left = None
-        elif mode_left is not None:
-            if self.zone_state(zone_id).hvac_mode == mode_left:
+        if mode_left is not None:
+            self._modes_seen[zone_id] = set()
+            delivered = await self._call(
+                zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
+            )
+            seen = self._modes_seen.pop(zone_id, set())
+            reached = mode_left in seen
+            if delivered:
+                mode_left = None
+            elif self.zone_state(zone_id).hvac_mode == mode_left or (
+                reached and self._last_mode.get(zone_id) == mode_left
+            ):
                 _LOGGER.debug("%s: the zone is %s anyway", zone_id, mode_left)
                 mode_left = None
-            elif self._mode_switches.get(zone_id, 0) != switches:
+            elif reached:
                 _LOGGER.info(
-                    "%s: switched by hand during set hvac_mode %s, left alone (%s)",
+                    "%s: set hvac_mode %s undone by hand, left alone (%s)",
                     zone_id,
                     mode_left,
                     reason,
