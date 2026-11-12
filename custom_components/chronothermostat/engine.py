@@ -599,11 +599,12 @@ class Engine:
         holds the value is not sent it again: that is also the case when the
         engine itself turned the zone on, since its own set_temperature lands
         under the lock before this runs. A zone switched off again before
-        this runs gets nothing.
+        this runs gets nothing; one that is away by then (the Wall Display's
+        blip) keeps the value pending for when it is back.
         """
         zone = self.zone_state(zone_id)
-        if zone.hvac_mode in (None, HVAC_OFF):
-            # Switched off again (or gone) before this queued work ran.
+        if zone.hvac_mode == HVAC_OFF:
+            # Switched off again before this queued work ran.
             return
         scenario = self.scenario
         target = rules.zone_turned_on_target(
@@ -826,9 +827,13 @@ class Engine:
                 reason,
             )
             return False
-        if service == SERVICE_SET_HVAC_MODE and self._last_mode.get(zone_id) != value:
-            # The zone is about to change mode because of this command.
-            self._unconfirmed.setdefault(zone_id, {})[value] = dt_util.utcnow()
+        if service == SERVICE_SET_HVAC_MODE:
+            unconfirmed = self._unconfirmed.setdefault(zone_id, {})
+            if self._last_mode.get(zone_id) != value or unconfirmed:
+                # The zone will change to this mode because of this command:
+                # from the mode it shows, or from that of an earlier command
+                # it has not shown yet.
+                unconfirmed[value] = dt_util.utcnow()
         try:
             async with asyncio.timeout(CALL_TIMEOUT):
                 await self.hass.services.async_call(

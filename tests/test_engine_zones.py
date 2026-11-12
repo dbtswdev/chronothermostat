@@ -1244,3 +1244,53 @@ async def test_an_old_command_that_never_showed_is_not_mistaken_for_a_late_repor
     sent.clear()
     await time_travel(at(10, 8))
     assert sent == []
+
+
+async def test_zone_switched_on_right_before_a_blip_gets_its_value_when_back(
+    hass, setup_at
+):
+    data = await setup_at(at(10, 7, 50))
+    hass.states.async_set(ZONE_A, "off", FORCED_ATTRIBUTES)
+    await hass.async_block_till_done()
+    sent = []
+    register_fake_climates(hass, sent)
+
+    # The engine is busy while the user switches zone A on and the Wall
+    # Display blips: the switch-on is handled while the zone is away.
+    async with data.engine._lock:
+        hass.states.async_set(ZONE_A, "heat", FORCED_ATTRIBUTES)
+        hass.states.async_set(ZONE_A, "unavailable")
+    await hass.async_block_till_done()
+    assert sent == []
+
+    hass.states.async_set(ZONE_A, "heat", FORCED_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert sent == [(ZONE_A, 19.0)]
+
+
+async def test_late_reports_of_two_quick_scenario_changes_keep_a_failed_off_pending(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+    failures = [TimeoutError()]
+
+    async def climate_service(call):
+        # The thermostats accept every command but report it late.
+        sent.append(call_value(call))
+        if sent.count((ZONE_A, "off")) == 2 and failures:
+            # During the second off, the first off and Work's heat show up.
+            hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+            hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+            raise failures.pop()
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await hass.async_block_till_done()
+    assert data.engine._pending == {ZONE_A: PendingCommand("off", None)}
+    sent.clear()
+
+    await time_travel(at(10, 8))
+    assert sent == [(ZONE_A, "off")]
