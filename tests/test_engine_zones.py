@@ -1003,19 +1003,27 @@ async def test_late_report_of_an_earlier_heat_does_not_cancel_a_failed_off(
     hass, setup_at, time_travel
 ):
     data = await setup_at(at(10, 7, 50))
-    # Zone A was sent heat earlier, but its state still lags at off.
-    hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "off", ZONE_ATTRIBUTES)
     await hass.async_block_till_done()
     sent = []
+    failures = [TimeoutError()]
 
     async def climate_service(call):
         sent.append(call_value(call))
-        if call.data["entity_id"] == ZONE_A and call.service == "set_hvac_mode":
-            # The earlier heat shows up while the off call is in flight.
+        if call_value(call) == (ZONE_A, "off") and failures:
+            # The heat sent a moment ago shows up only now (after a report
+            # that changes no mode), and the off call times out.
+            hass.states.async_set(
+                ZONE_A, "off", {**ZONE_ATTRIBUTES, "current_temperature": 18.5}
+            )
             hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
-            raise TimeoutError
+            raise failures.pop()
 
     register_climate_services(hass, climate_service)
+    # Work: the thermostats accept heat but still show off.
+    await data.engine.async_set_scenario(Scenario.WORK)
     await data.engine.async_set_scenario(Scenario.OFF)
     await hass.async_block_till_done()
     assert data.engine._pending == {ZONE_A: PendingCommand("off", None)}
@@ -1024,6 +1032,127 @@ async def test_late_report_of_an_earlier_heat_does_not_cancel_a_failed_off(
     # Nobody acted by hand: the house is off, so the off is retried.
     await time_travel(at(10, 8))
     assert sent == [(ZONE_A, "off")]
+
+
+async def test_zone_switched_on_by_hand_while_off_call_is_in_flight_is_left_alone(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "off"):
+            # The off lands, the user switches the zone on again, the call fails.
+            hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+            hass.states.async_set(ZONE_A, "heat", FORCED_ATTRIBUTES)
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await hass.async_block_till_done()
+    assert data.engine._pending == {}
+    sent.clear()
+
+    await time_travel(at(10, 8))
+    assert sent == []
+    assert hass.states.get(ZONE_A).state == "heat"
+
+
+async def test_off_then_work_within_the_blip_still_switches_the_zone_on(
+    hass, setup_at
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "off"):
+            # Accepted; the Wall Display then blips before showing off.
+            hass.states.async_set(ZONE_A, "unavailable")
+        elif call_value(call) == (ZONE_A, "heat"):
+            hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    assert data.engine._pending == {ZONE_A: PendingCommand("heat", 19.0)}
+    sent.clear()
+
+    # Back from the blip showing the engine's own off: not a switch-off by hand.
+    hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert sent == [(ZONE_A, "heat"), (ZONE_A, 19.0)]
+    assert data.engine._pending == {}
+
+
+async def test_zone_already_on_switched_off_during_a_failed_heat_call_stays_off(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "heat"):
+            hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)  # by hand
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.HOLIDAY)
+    await hass.async_block_till_done()
+    assert ZONE_A not in data.engine._pending
+    sent.clear()
+
+    await time_travel(at(10, 8))
+    assert sent == []
+    assert hass.states.get(ZONE_A).state == "off"
+
+
+async def test_failed_mode_call_to_a_zone_already_in_that_mode_is_not_retried(
+    hass, setup_at
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "heat"):
+            raise HomeAssistantError("climate failure")
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.HOLIDAY)
+
+    assert sent == [(ZONE_A, "heat"), (ZONE_A, 19.0), (ZONE_B, "heat"), (ZONE_B, 19.0)]
+    assert data.engine._pending == {}
+
+
+async def test_zone_switched_on_at_the_program_value_leaves_nothing_pending(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    await data.engine.async_set_scenario(Scenario.OFF)
+    for zone_id in (ZONE_A, ZONE_B):
+        hass.states.async_set(zone_id, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "heat"):
+            raise HomeAssistantError("climate failure")
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    assert data.engine._pending == {ZONE_A: PendingCommand("heat", 19.0)}
+
+    # Zone A comes on already at the program's 19.0: mode and value are done.
+    hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert data.engine._pending == {}
+    sent.clear()
+    await time_travel(at(10, 8))
+    assert sent == []
 
 
 async def test_heat_that_lands_right_before_a_blip_keeps_its_temperature(
@@ -1060,3 +1189,58 @@ async def test_heat_that_lands_right_before_a_blip_keeps_its_temperature(
     await hass.async_block_till_done()
     assert sent == [(ZONE_A, 19.0)]
     assert data.engine._pending == {}
+
+
+async def test_zone_back_from_a_long_outage_showing_the_engines_off_is_switched_on(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "off"):
+            hass.states.async_set(ZONE_A, "unavailable")  # accepted, then away
+        elif call_value(call) == (ZONE_A, "heat"):
+            hass.states.async_set(ZONE_A, "heat", ZONE_ATTRIBUTES)
+
+    register_climate_services(hass, climate_service)
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await data.engine.async_set_scenario(Scenario.WORK)
+    sent.clear()
+
+    # Minutes later the zone returns showing the off it got before going away.
+    await time_travel(at(10, 7, 56))
+    hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)
+    await hass.async_block_till_done()
+    assert sent == [(ZONE_A, "heat"), (ZONE_A, 19.0)]
+
+
+async def test_an_old_command_that_never_showed_is_not_mistaken_for_a_late_report(
+    hass, setup_at, time_travel
+):
+    data = await setup_at(at(10, 7, 50))
+    sent = []
+
+    async def climate_service(call):
+        sent.append(call_value(call))
+        if call_value(call) == (ZONE_A, "heat"):
+            hass.states.async_set(ZONE_A, "off", ZONE_ATTRIBUTES)  # by hand
+            raise TimeoutError
+
+    register_climate_services(hass, climate_service)
+    # The off is accepted but zone A never shows it.
+    await data.engine.async_set_scenario(Scenario.OFF)
+    await time_travel(at(10, 7, 53))
+    hass.states.async_set(
+        ZONE_A, "heat", {**ZONE_ATTRIBUTES, "current_temperature": 20.0}
+    )
+    await hass.async_block_till_done()
+
+    # Three minutes on, a switch-off is the user's, not that old command.
+    await data.engine.async_set_scenario(Scenario.HOLIDAY)
+    await hass.async_block_till_done()
+    assert ZONE_A not in data.engine._pending
+    sent.clear()
+    await time_travel(at(10, 8))
+    assert sent == []

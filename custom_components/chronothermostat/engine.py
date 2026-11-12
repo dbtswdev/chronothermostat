@@ -73,6 +73,9 @@ _LOGGER = logging.getLogger(__name__)
 CALL_TIMEOUT = 10
 # Seconds async_stop waits for engine work in flight (longer than CALL_TIMEOUT).
 STOP_TIMEOUT = 15
+# Seconds after a mode command in which a zone showing that mode is the
+# command's own, possibly late, effect and not something done by hand.
+REPORT_WINDOW = 60
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,17 @@ class PendingCommand:
 
     hvac_mode: str | None
     temperature: float | None
+
+
+@dataclass
+class _ModeCall:
+    """What a zone did while a set_hvac_mode call to it was in flight."""
+
+    mode: str
+    # The zone switched to the mode asked for.
+    reached: bool = False
+    # The zone was switched on or off by hand.
+    by_hand: bool = False
 
 
 def _is_future(value: datetime | None) -> bool:
@@ -158,8 +172,13 @@ class Engine:
         self._unsub_zones: CALLBACK_TYPE | None = None
         # Last hvac mode of each zone seen while it was available.
         self._last_mode: dict[str, str] = {}
-        # Modes each zone showed while a mode call to it was in flight.
-        self._modes_seen: dict[str, set[str]] = {}
+        # The mode call in flight to each zone.
+        self._mode_calls: dict[str, _ModeCall] = {}
+        # Mode commands sent to each zone whose mode the zone has not shown
+        # yet, with the time they were sent.
+        self._unconfirmed: dict[str, dict[str, datetime]] = {}
+        # When each zone was last seen available.
+        self._last_seen: dict[str, datetime] = {}
         # Set by async_stop: from then on the engine sends and saves nothing.
         self._stopped = False
         self._tasks: set[asyncio.Task[None]] = set()
@@ -183,6 +202,7 @@ class Engine:
             state = self.hass.states.get(zone_id)
             if _is_available(state):
                 self._last_mode[zone_id] = state.state
+                self._last_seen[zone_id] = dt_util.utcnow()
         self._unsub_zones = async_track_state_change_event(
             self.hass, self.zone_ids, self._on_zone_change
         )
@@ -380,11 +400,14 @@ class Engine:
         after each command is neither "switched on" nor "switched off", and
         a switch-on that reaches Home Assistant across a blip still counts.
         A zone becoming available (from missing, unavailable or unknown)
-        gets its pending command. A zone switched off drops its pending
-        command, so no retry switches it back on (§4.6). A zone that shows the
-        mode of its pending command needs that mode no more: a call that
-        failed or timed out may still have reached the thermostat, and
-        resending it later would undo what the user did by hand meanwhile.
+        gets its pending command.
+
+        A switch between off and on is the engine's own when the zone shows
+        the mode of a command sent to it shortly before (see _confirm_mode);
+        any other is done by hand. A zone switched off by hand drops its
+        pending command, so no retry switches it back on (§4.6). A zone that
+        shows the mode of its pending command needs that mode no more: a call
+        that failed or timed out may still have reached the thermostat.
         """
         new_state = event.data["new_state"]
         if not _is_available(new_state):
@@ -395,15 +418,24 @@ class Engine:
         turned_on = last_mode == HVAC_OFF and new_state.state != HVAC_OFF
         turned_off = last_mode not in (None, HVAC_OFF) and new_state.state == HVAC_OFF
         became_available = not _is_available(event.data["old_state"])
-        if zone_id in self._modes_seen:
-            self._modes_seen[zone_id].add(new_state.state)
+        own = self._confirm_mode(zone_id, new_state.state)
+        self._last_seen[zone_id] = dt_util.utcnow()
+        by_hand = (turned_on or turned_off) and not own
+        mode_call = self._mode_calls.get(zone_id)
+        if mode_call is not None:
+            if new_state.state == mode_call.mode:
+                mode_call.reached = True
+            elif by_hand:
+                mode_call.by_hand = True
         pending = self._pending.get(zone_id)
-        if turned_off and pending is not None:
+        if turned_off and by_hand and pending is not None:
             # Dropped right away, before a queued tick or retry can resend it:
             # a pending heat or temperature is not for a zone that is off, and
             # a pending off is done.
             del self._pending[zone_id]
-            _LOGGER.debug("%s: switched off, pending command dropped", zone_id)
+            _LOGGER.debug(
+                "%s: switched off by hand, pending command dropped", zone_id
+            )
         elif pending is not None and pending.hvac_mode == new_state.state:
             self._drop_pending_mode(zone_id)
             _LOGGER.debug(
@@ -426,6 +458,24 @@ class Engine:
         if not task.done():
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+
+    def _confirm_mode(self, zone_id: str, mode: str) -> bool:
+        """Return True if the zone showing a mode is the effect of a command.
+
+        That is the case for a mode sent to the zone and not shown by it yet,
+        when it was sent at most REPORT_WINDOW seconds ago or the zone has
+        not been seen available since (a thermostat that was away shows its
+        last command when it returns). The command is confirmed either way.
+        """
+        sent_at = self._unconfirmed.get(zone_id, {}).pop(mode, None)
+        if sent_at is None:
+            return False
+        last_seen = self._last_seen.get(zone_id)
+        return (
+            last_seen is None
+            or last_seen <= sent_at
+            or (dt_util.utcnow() - sent_at).total_seconds() <= REPORT_WINDOW
+        )
 
     def _drop_pending_mode(self, zone_id: str) -> None:
         """Forget the hvac mode of a zone's pending command, keep the rest."""
@@ -694,39 +744,39 @@ class Engine:
         pending command; parts delivered now drop out of it. The temperature
         is not sent while the hvac mode is undelivered.
 
-        A mode call that fails or times out is judged by what the zone
-        showed. The call did land if the zone shows the mode now, or reached
-        it while the call was in flight and has shown no other mode since
-        (the Wall Display's blip right after a command must not hide it). If
-        the zone reached the mode during the call and then left it, someone
-        undid it by hand: the hand wins and nothing of this command stays
-        pending (§4.6). Anything else, such as a zone that is away or the
-        late report of an earlier command, leaves the mode pending as usual.
+        A zone switched on or off by hand while the mode call is in flight
+        is left as the hand left it: the temperature is not sent and nothing
+        of this command stays pending (§4.6). Otherwise a mode call that
+        fails or times out did land if the zone shows the mode now, or
+        reached it during the call and has shown no other mode since (the
+        Wall Display's blip right after a command must not hide it). Anything
+        else, such as a zone that is away or the late report of an earlier
+        command, leaves the mode pending.
         """
         mode_left, temperature_left = hvac_mode, temperature
         if mode_left is not None:
-            self._modes_seen[zone_id] = set()
-            delivered = await self._call(
-                zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
-            )
-            seen = self._modes_seen.pop(zone_id, set())
-            reached = mode_left in seen
-            if delivered:
-                mode_left = None
-            elif self.zone_state(zone_id).hvac_mode == mode_left or (
-                reached and self._last_mode.get(zone_id) == mode_left
-            ):
-                _LOGGER.debug("%s: the zone is %s anyway", zone_id, mode_left)
-                mode_left = None
-            elif reached:
+            mode_call = self._mode_calls[zone_id] = _ModeCall(mode_left)
+            try:
+                delivered = await self._call(
+                    zone_id, SERVICE_SET_HVAC_MODE, ATTR_HVAC_MODE, mode_left, reason
+                )
+            finally:
+                self._mode_calls.pop(zone_id, None)
+            if mode_call.by_hand:
                 _LOGGER.info(
-                    "%s: set hvac_mode %s undone by hand, left alone (%s)",
+                    "%s: switched by hand during set hvac_mode %s, left alone (%s)",
                     zone_id,
                     mode_left,
                     reason,
                 )
                 self._pending.pop(zone_id, None)
                 return
+            if (
+                delivered
+                or self.zone_state(zone_id).hvac_mode == mode_left
+                or (mode_call.reached and self._last_mode.get(zone_id) == mode_left)
+            ):
+                mode_left = None
         if (
             mode_left is None
             and temperature_left is not None
@@ -776,6 +826,9 @@ class Engine:
                 reason,
             )
             return False
+        if service == SERVICE_SET_HVAC_MODE and self._last_mode.get(zone_id) != value:
+            # The zone is about to change mode because of this command.
+            self._unconfirmed.setdefault(zone_id, {})[value] = dt_util.utcnow()
         try:
             async with asyncio.timeout(CALL_TIMEOUT):
                 await self.hass.services.async_call(
