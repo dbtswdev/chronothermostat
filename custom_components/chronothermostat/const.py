@@ -33,3 +33,8 @@ SIGNAL_UPDATED = "chronothermostat_updated_{entry_id}"
 
 HVAC_ON = "heat"
 HVAC_OFF = "off"
+
+
+def status_unique_id(entry_id: str, zone_id: str) -> str:
+    """Return the unique id of a zone's status sensor."""
+    return f"{entry_id}_{zone_id}_status"

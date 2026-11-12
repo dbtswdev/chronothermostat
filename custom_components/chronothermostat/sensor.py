@@ -11,15 +11,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .const import DOMAIN
+from .const import DOMAIN, status_unique_id
 from .entity import ChronoEntity
 from .engine import Engine
 from .status import ZoneStatusKey
-
-
-def status_unique_id(entry_id: str, zone_id: str) -> str:
-    """Return the unique id of a zone's status sensor."""
-    return f"{entry_id}_{zone_id}_status"
 
 
 async def async_setup_entry(

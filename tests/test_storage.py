@@ -201,3 +201,17 @@ async def test_load_leaves_valid_data_alone(hass, hass_storage, caplog):
     assert s.return_at == datetime(2026, 11, 20, 18, 0, tzinfo=timezone.utc)
     assert s.get_week("climate.a", Scenario.HOLIDAY)["sat"] == [18.5] * 96
     assert not [r for r in caplog.records if r.name.endswith("chronothermostat.storage")]
+
+
+async def test_rename_zone_moves_programs_and_keeps_order(hass, hass_storage):
+    s = ProgramStore(hass, "e1")
+    await s.async_load()
+    for zone_id in ("climate.a", "climate.b", "climate.new"):
+        s.ensure_zone(zone_id)
+    s.set_day("climate.a", Scenario.WORK, "mon", [21.0] * 96)
+
+    s.rename_zone("climate.a", "climate.new")
+    s.rename_zone("climate.unknown", "climate.other")
+
+    assert s.zone_ids == ["climate.new", "climate.b"]
+    assert s.get_week("climate.new", Scenario.WORK)["mon"] == [21.0] * 96

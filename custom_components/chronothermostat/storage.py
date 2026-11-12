@@ -153,6 +153,21 @@ class ProgramStore:
                 scenario.value: default_week() for scenario in PROGRAM_SCENARIOS
             }
 
+    def rename_zone(self, old_id: str, new_id: str) -> None:
+        """Move a zone's programs to a new id, keeping the zones' order.
+
+        Programs already stored under the new id are replaced; an unknown
+        old id is ignored.
+        """
+        zones = self._data["zones"]
+        if old_id not in zones or old_id == new_id:
+            return
+        self._data["zones"] = {
+            (new_id if zone_id == old_id else zone_id): programs
+            for zone_id, programs in zones.items()
+            if zone_id != new_id
+        }
+
     def remove_zone(self, zone_id: str) -> None:
         """Forget a zone and its programs; unknown zones are ignored."""
         self._data["zones"].pop(zone_id, None)

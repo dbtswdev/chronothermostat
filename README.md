@@ -122,6 +122,9 @@ status sensor of a removed zone is deleted, but its programs are kept, so adding
 zone back restores them.
 A zone's name is the friendly name of its `climate` entity; the editor card accepts
 an optional `name` to override it.
+If you change the entity id of a zone's `climate` entity, the zone follows it: its
+programs and its status sensor are kept and the integration reloads. Cards that name
+the old entity id have to be edited by hand.
 
 When the integration is added, and every time it reloads (after **Configure**, for
 example), zones that are on in Work or Holiday are sent the value of the current

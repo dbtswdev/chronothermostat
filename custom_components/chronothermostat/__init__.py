@@ -7,11 +7,12 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.event import async_track_entity_registry_updated_event
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_ZONES, DOMAIN, PLATFORMS
+from .const import CONF_ZONES, DOMAIN, PLATFORMS, status_unique_id
 from .engine import Engine
 from .frontend import async_register_frontend
 from .services import async_register_services
@@ -69,7 +70,60 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _pop_data(hass, entry)
         await engine.async_stop()
         raise
+
+    @callback
+    def on_zone_registry_update(
+        event: Event[er.EventEntityRegistryUpdatedData],
+    ) -> None:
+        """Follow a zone whose climate entity id was changed."""
+        if event.data["action"] == "update" and "old_entity_id" in event.data:
+            entry.async_create_task(
+                hass,
+                _async_rename_zone(
+                    hass, entry, event.data["old_entity_id"], event.data["entity_id"]
+                ),
+            )
+
+    entry.async_on_unload(
+        async_track_entity_registry_updated_event(
+            hass, zone_ids, on_zone_registry_update
+        )
+    )
     return True
+
+
+async def _async_rename_zone(
+    hass: HomeAssistant, entry: ConfigEntry, old_id: str, new_id: str
+) -> None:
+    """Move a zone to its climate's new entity id, then reload the entry.
+
+    The zone's programs and its status sensor follow the new id. Dashboard
+    cards keep the old id until they are edited.
+    """
+    data: ChronoData | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if data is None or old_id not in data.zone_ids:
+        return
+    data.store.rename_zone(old_id, new_id)
+    await data.store.async_save()
+    registry = er.async_get(hass)
+    sensor_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, status_unique_id(entry.entry_id, old_id)
+    )
+    if sensor_id is not None:
+        registry.async_update_entity(
+            sensor_id, new_unique_id=status_unique_id(entry.entry_id, new_id)
+        )
+    zones = [new_id if zone_id == old_id else zone_id for zone_id in data.zone_ids]
+    if CONF_ZONES in entry.options:
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_ZONES: zones}
+        )
+    else:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_ZONES: zones}
+        )
+    _LOGGER.info("Zone %s follows its climate's new entity id %s", old_id, new_id)
+    hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
