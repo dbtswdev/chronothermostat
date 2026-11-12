@@ -1,6 +1,7 @@
 """Tests for the frontend bundle registration."""
 
 import logging
+import pathlib
 
 from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.setup import async_setup_component
@@ -75,3 +76,15 @@ async def test_registration_logged(hass, setup_integration, caplog):
         await async_register_frontend(hass)
 
     assert "registered Lovelace resource" in caplog.text
+
+
+def test_bundle_ships_the_licences_of_the_code_it_contains():
+    frontend = pathlib.Path("custom_components/chronothermostat/frontend")
+    bundle = (frontend / "chronothermostat-cards.js").read_text()
+    notices = (frontend / "THIRD-PARTY-NOTICES.txt").read_text()
+    # Lit is BSD-3-Clause: its notice must travel with the minified bundle.
+    assert "THIRD-PARTY-NOTICES.txt" in bundle[:200]
+    assert "Google LLC" in bundle
+    assert "lit@" in notices
+    assert "Copyright (c) 2017 Google LLC" in notices
+    assert "Redistributions in binary form must reproduce" in notices

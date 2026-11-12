@@ -68,4 +68,7 @@ jobs:
       - run: npm run build
       - name: Fail if the committed bundle is stale
         working-directory: .
-        run: git diff --exit-code custom_components/chronothermostat/frontend/
+        run: |
+          git diff --exit-code custom_components/chronothermostat/frontend/
+          # A generated file that was never committed is stale too.
+          test -z "$(git status --porcelain custom_components/chronothermostat/frontend/)"
