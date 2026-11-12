@@ -4,16 +4,96 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import logging
+import math
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import PROGRAM_SCENARIOS, WEEKDAYS, Scenario
+from .const import PROGRAM_SCENARIOS, SLOTS, WEEKDAYS, Scenario
 from .program import Week, default_week
 
+_LOGGER = logging.getLogger(__name__)
+
 STORAGE_VERSION = 1
+
+
+def _valid_day(day: Any) -> bool:
+    """Return True for a list of SLOTS finite numbers."""
+    return (
+        isinstance(day, list)
+        and len(day) == SLOTS
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in day
+        )
+    )
+
+
+def _repaired_week(zone_id: str, program: str, stored: Any) -> Week:
+    """Return a stored week with every unusable day replaced by the default."""
+    week = default_week()
+    if not isinstance(stored, dict):
+        _LOGGER.warning(
+            "Stored %s program of %s is unusable; using the default", program, zone_id
+        )
+        return week
+    for weekday in WEEKDAYS:
+        if _valid_day(stored.get(weekday)):
+            week[weekday] = [float(value) for value in stored[weekday]]
+        else:
+            _LOGGER.warning(
+                "Stored %s program of %s for %s is unusable; using the default",
+                program,
+                zone_id,
+                weekday,
+            )
+    return week
+
+
+def _repaired(stored: Any) -> dict[str, Any]:
+    """Return stored data in the expected shape, whatever was on disk.
+
+    A file edited by hand, cut short or written by another version must not
+    leave the integration loaded but unable to work: whatever cannot be used
+    is replaced by its default and logged.
+    """
+    data: dict[str, Any] = {
+        "scenario": Scenario.WORK.value,
+        "return_at": None,
+        "zones": {},
+    }
+    if not isinstance(stored, dict):
+        _LOGGER.warning("Stored data is unusable; starting from the defaults")
+        return data
+    scenario = stored.get("scenario", Scenario.WORK.value)
+    if scenario in {item.value for item in Scenario}:
+        data["scenario"] = scenario
+    else:
+        _LOGGER.warning("Stored scenario %r is unknown; using work", scenario)
+    return_at = stored.get("return_at")
+    if isinstance(return_at, str) and dt_util.parse_datetime(return_at) is not None:
+        data["return_at"] = return_at
+    elif return_at is not None:
+        _LOGGER.warning("Stored return time %r is unusable; dropped", return_at)
+    zones = stored.get("zones", {})
+    if not isinstance(zones, dict):
+        _LOGGER.warning("Stored zones are unusable; starting from the defaults")
+        return data
+    for zone_id, programs in zones.items():
+        if not isinstance(programs, dict):
+            programs = {}
+        data["zones"][zone_id] = {
+            scenario.value: _repaired_week(
+                zone_id, scenario.value, programs.get(scenario.value)
+            )
+            for scenario in PROGRAM_SCENARIOS
+        }
+    return data
 
 
 class ProgramStore:
@@ -31,10 +111,13 @@ class ProgramStore:
         return {"scenario": Scenario.WORK.value, "return_at": None, "zones": {}}
 
     async def async_load(self) -> None:
-        """Load persisted data, keeping defaults when nothing is stored."""
+        """Load persisted data, keeping defaults when nothing is stored.
+
+        Stored data that cannot be used is repaired (see _repaired).
+        """
         stored = await self._store.async_load()
         if stored is not None:
-            self._data = {**self._empty(), **stored}
+            self._data = _repaired(stored)
 
     async def async_save(self) -> None:
         """Write the current data to disk immediately."""
